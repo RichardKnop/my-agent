@@ -1,0 +1,41 @@
+[
+  {
+    "name": "frontend",
+    "description": "Public web BFF that renders the storefront and checkout UI.",
+    "depends_on": [
+      "checkout"
+    ]
+  },
+  {
+    "name": "checkout",
+    "description": "Orchestrates an order: reserves inventory, then charges payment.",
+    "depends_on": [
+      "payments",
+      "inventory"
+    ]
+  },
+  {
+    "name": "payments",
+    "description": "Processes card charges against the payments database and an external gateway.",
+    "depends_on": [
+      "payments-db"
+    ]
+  },
+  {
+    "name": "inventory",
+    "description": "Reserves and decrements stock levels.",
+    "depends_on": [
+      "inventory-db"
+    ]
+  },
+  {
+    "name": "payments-db",
+    "description": "Postgres primary backing the payments service.",
+    "depends_on": []
+  },
+  {
+    "name": "inventory-db",
+    "description": "Postgres primary backing the inventory service.",
+    "depends_on": []
+  }
+]
