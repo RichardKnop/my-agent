@@ -8,6 +8,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -169,16 +170,47 @@ func round2(f float64) float64 {
 
 // ---- query_logs ----
 
-const maxLogResults = 40
+// query_logs has two output modes, and the default is the interesting
+// context-engineering decision.
+//
+// "grouped" (default) collapses identical lines into one row per
+// (service, level, message) with a count, first/last seen timestamps and a
+// few sample trace_ids. Incident logs are extremely repetitive: in the mock
+// dataset 1,663 ERROR lines are just 3 distinct messages. Returning the 40
+// newest raw lines would show the model 40 copies of one message from the
+// tail of the incident and cut off the two things it needs most: when the
+// errors *started*, and rare one-off lines such as a deploy notice. Grouped
+// rows keep both, in a fraction of the tokens.
+//
+// "raw" returns individual lines, newest first, for when the model needs
+// them, typically to follow one request across services with trace_id.
+//
+// Grouping is by exact message. Real logs embed variable parts (request IDs,
+// durations, counters), so production systems first turn messages into
+// templates by masking those parts (e.g. the Drain algorithm). Our mock
+// messages are constant, so exact matching is enough here.
+const (
+	maxLogResults     = 40 // raw mode: max lines returned
+	maxLogGroups      = 40 // grouped mode: max groups returned
+	maxSampleTraceIDs = 3  // grouped mode: trace_ids kept per group
+	logModeGrouped    = "grouped"
+	logModeRaw        = "raw"
+)
 
 var queryLogsDef = Definition{
 	Name: "query_logs",
 	Description: fmt.Sprintf(
-		"Search log lines within a time window, optionally filtered by service, level and a "+
-			"substring match on the message. Results are capped at %d lines (most recent first) — "+
-			"narrow the time window or add a \"contains\" filter if you need something more specific. "+
-			"Use the shared trace_id on returned entries to follow one request across services.",
-		maxLogResults),
+		"Search log lines within a time window, optionally filtered by service, level, trace_id "+
+			"and a substring match on the message.\n\n"+
+			"By default (mode \"grouped\") identical lines are collapsed into one group per "+
+			"(service, level, message), with the number of occurrences, the first_seen and last_seen "+
+			"timestamps, and up to %d sample trace_ids. Groups are ordered by first_seen, so they read "+
+			"as a timeline of when each kind of message started. At most %d groups are returned.\n\n"+
+			"Use mode \"raw\" to get individual lines instead (most recent first, at most %d). "+
+			"To follow one request across services, take a trace_id from a group's sample_trace_ids "+
+			"and query with mode \"raw\" and that trace_id, without a service filter.\n\n"+
+			"If the result says truncated, narrow the time window or add filters.",
+		maxSampleTraceIDs, maxLogGroups, maxLogResults),
 	InputSchema: map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -193,6 +225,15 @@ var queryLogsDef = Definition{
 			"contains": map[string]any{
 				"type":        "string",
 				"description": "Optional case-insensitive substring the log message must contain.",
+			},
+			"trace_id": map[string]any{
+				"type":        "string",
+				"description": "Optional exact trace_id; returns only lines from that one request.",
+			},
+			"mode": map[string]any{
+				"type":        "string",
+				"enum":        []string{logModeGrouped, logModeRaw},
+				"description": "\"grouped\" (default) collapses identical lines with counts; \"raw\" returns individual lines.",
 			},
 			"start": map[string]any{
 				"type": "string",
@@ -209,8 +250,21 @@ type logsArgs struct {
 	Service  string `json:"service"`
 	Level    string `json:"level"`
 	Contains string `json:"contains"`
+	TraceID  string `json:"trace_id"`
+	Mode     string `json:"mode"`
 	Start    string `json:"start"`
 	End      string `json:"end"`
+}
+
+// LogGroup is one row of grouped query_logs output.
+type LogGroup struct {
+	Service        string   `json:"service"`
+	Level          string   `json:"level"`
+	Message        string   `json:"message"`
+	Count          int      `json:"count"`
+	FirstSeen      string   `json:"first_seen"`
+	LastSeen       string   `json:"last_seen"`
+	SampleTraceIDs []string `json:"sample_trace_ids,omitempty"`
 }
 
 func queryLogs(store *data.Store, input json.RawMessage) (string, error) {
@@ -218,9 +272,51 @@ func queryLogs(store *data.Store, input json.RawMessage) (string, error) {
 	if err := json.Unmarshal(input, &a); err != nil {
 		return "", fmt.Errorf("bad input: %w", err)
 	}
+	if a.Mode == "" {
+		a.Mode = logModeGrouped
+	}
+	if a.Mode != logModeGrouped && a.Mode != logModeRaw {
+		return "", fmt.Errorf("unknown mode %q: use %q or %q", a.Mode, logModeGrouped, logModeRaw)
+	}
 
+	matched := filterLogs(store.Logs, a)
+
+	if a.Mode == logModeRaw {
+		sort.Slice(matched, func(i, j int) bool { return matched[i].TS > matched[j].TS })
+		total := len(matched)
+		truncated := total > maxLogResults
+		if truncated {
+			matched = matched[:maxLogResults]
+		}
+		return encode(map[string]any{
+			"mode":          logModeRaw,
+			"total_matches": total,
+			"returned":      len(matched),
+			"truncated":     truncated,
+			"entries":       matched,
+		})
+	}
+
+	groups := groupLogs(matched)
+	totalGroups := len(groups)
+	truncated := totalGroups > maxLogGroups
+	if truncated {
+		groups = groups[:maxLogGroups]
+	}
+	return encode(map[string]any{
+		"mode":            logModeGrouped,
+		"total_matches":   len(matched),
+		"total_groups":    totalGroups,
+		"returned_groups": len(groups),
+		"truncated":       truncated,
+		"groups":          groups,
+	})
+}
+
+func filterLogs(logs []data.LogEntry, a logsArgs) []data.LogEntry {
+	contains := strings.ToLower(a.Contains)
 	var matched []data.LogEntry
-	for _, l := range store.Logs {
+	for _, l := range logs {
 		if !inRange(l.TS, a.Start, a.End) {
 			continue
 		}
@@ -230,27 +326,57 @@ func queryLogs(store *data.Store, input json.RawMessage) (string, error) {
 		if a.Level != "" && l.Level != a.Level {
 			continue
 		}
-		if a.Contains != "" && !strings.Contains(strings.ToLower(l.Message), strings.ToLower(a.Contains)) {
+		if a.TraceID != "" && l.TraceID != a.TraceID {
+			continue
+		}
+		if contains != "" && !strings.Contains(strings.ToLower(l.Message), contains) {
 			continue
 		}
 		matched = append(matched, l)
 	}
+	return matched
+}
 
-	sort.Slice(matched, func(i, j int) bool { return matched[i].TS > matched[j].TS })
+// groupLogs collapses entries with the same (service, level, message) and
+// returns the groups ordered by first_seen, so they read as a timeline.
+// Sample trace_ids are the earliest distinct ones, which point at requests
+// from around the moment a problem started.
+func groupLogs(entries []data.LogEntry) []LogGroup {
+	sorted := slices.Clone(entries)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].TS < sorted[j].TS })
 
-	total := len(matched)
-	truncated := false
-	if len(matched) > maxLogResults {
-		matched = matched[:maxLogResults]
-		truncated = true
+	type key struct{ service, level, message string }
+	index := map[key]int{}
+	var groups []LogGroup
+	for _, e := range sorted {
+		k := key{e.Service, e.Level, e.Message}
+		i, ok := index[k]
+		if !ok {
+			i = len(groups)
+			index[k] = i
+			groups = append(groups, LogGroup{
+				Service: e.Service, Level: e.Level, Message: e.Message, FirstSeen: e.TS,
+			})
+		}
+		g := &groups[i]
+		g.Count++
+		g.LastSeen = e.TS
+		if e.TraceID != "" && len(g.SampleTraceIDs) < maxSampleTraceIDs && !slices.Contains(g.SampleTraceIDs, e.TraceID) {
+			g.SampleTraceIDs = append(g.SampleTraceIDs, e.TraceID)
+		}
 	}
-
-	return encode(map[string]any{
-		"total_matches": total,
-		"returned":      len(matched),
-		"truncated":     truncated,
-		"entries":       matched,
+	// Groups were created in first_seen order already; make ties
+	// deterministic so output doesn't depend on input order.
+	sort.SliceStable(groups, func(i, j int) bool {
+		if groups[i].FirstSeen != groups[j].FirstSeen {
+			return groups[i].FirstSeen < groups[j].FirstSeen
+		}
+		if groups[i].Service != groups[j].Service {
+			return groups[i].Service < groups[j].Service
+		}
+		return groups[i].Message < groups[j].Message
 	})
+	return groups
 }
 
 // ---- get_deploys ----

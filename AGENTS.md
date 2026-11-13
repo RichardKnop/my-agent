@@ -50,7 +50,7 @@ skills/             stage 2 placeholder
 ```
 python3 scripts/gen_data.py                    # regenerate data/*.json (incident = yesterday, UTC)
 python3 scripts/gen_data.py --date 2026-08-23  # pinned, reproducible dataset
-go build ./... && go vet ./... && go test ./...
+gofmt -l . && go vet ./... && go test -race ./...   # same checks as CI
 go run ./cmd/agent -v 2 "why did checkout error rate spike yesterday afternoon?"
 ```
 
@@ -64,10 +64,25 @@ go run ./cmd/agent -v 2 "why did checkout error rate spike yesterday afternoon?"
 - `-v 2` prints everything that enters the context window (system prompt, tool
   definitions, tool results). Use it when debugging agent behavior.
 
+## Git workflow
+
+- **Never commit or push directly to `main`.** All changes go through a pull request.
+- Branch off an up-to-date `main` with a short descriptive name (e.g. `log-grouping`,
+  `skills-loader`). Keep one topic per branch, roughly one roadmap step or refactor.
+- Keep each commit focused, with a message that says what changed and why.
+- Open the PR with `gh pr create`. In the description, summarize the change and call
+  out any behavior changes (system prompt, tool descriptions, tool output shape).
+- CI (`.github/workflows/test.yml`) runs `gofmt`, `go vet` and `go test -race` on
+  every PR. Run the same checks locally before pushing, and the PR must be green
+  before it's merged.
+- Commit, push and open PRs only when the user asks. Never merge a PR yourself.
+
 ## Testing conventions
 
 - Use testify: `require` for preconditions whose failure makes the rest of the test
   meaningless (errors, lengths before indexing), `assert` for everything else.
+  Inside goroutines the test didn't start itself (e.g. `httptest` handlers), use only
+  `assert`, because `require` calls `t.FailNow`, which must run on the test goroutine.
 - Define interfaces on the consumer side (e.g. `agent.LLM`), and give them only the
   methods the consumer calls.
 - Fake external boundaries (the model API) with small hand-written fakes that replay
