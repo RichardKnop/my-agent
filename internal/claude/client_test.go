@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestResolveURL(t *testing.T) {
@@ -17,32 +20,26 @@ func TestResolveURL(t *testing.T) {
 		"http://localhost:11434/v1/messages": "http://localhost:11434/v1/messages",
 	}
 	for in, want := range cases {
-		if got := ResolveURL(in); got != want {
-			t.Errorf("ResolveURL(%q) = %q, want %q", in, got, want)
-		}
+		assert.Equal(t, want, ResolveURL(in), "ResolveURL(%q)", in)
 	}
-	if !IsAnthropicHosted("") || IsAnthropicHosted("http://localhost:11434") {
-		t.Error("IsAnthropicHosted misclassified a URL")
-	}
+	assert.True(t, IsAnthropicHosted(""))
+	assert.False(t, IsAnthropicHosted("http://localhost:11434"))
 }
 
 // A local server (e.g. Ollama) gets the same request shape, without an API
 // key header when none is configured, and its tool_use reply decodes.
 func TestCreateMessageAgainstLocalServer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/messages" {
-			t.Errorf("path = %q, want /v1/messages", r.URL.Path)
-		}
-		if k := r.Header.Get("x-api-key"); k != "" {
-			t.Errorf("x-api-key sent to local server: %q", k)
-		}
+		// assert, not require: require calls t.FailNow, which must not run
+		// outside the test goroutine (this handler runs on the server's).
+		assert.Equal(t, "/v1/messages", r.URL.Path)
+		assert.Empty(t, r.Header.Get("x-api-key"), "x-api-key must not be sent to a local server")
+
 		var req Request
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode request: %v", err)
+		if assert.NoError(t, json.NewDecoder(r.Body).Decode(&req)) {
+			assert.Equal(t, "qwen3-coder", req.Model)
 		}
-		if req.Model != "qwen3-coder" {
-			t.Errorf("model = %q", req.Model)
-		}
+
 		w.Header().Set("content-type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"msg_1","role":"assistant","stop_reason":"tool_use",
 			"content":[{"type":"tool_use","id":"call_1","name":"list_services","input":{}}],
@@ -55,10 +52,9 @@ func TestCreateMessageAgainstLocalServer(t *testing.T) {
 		Model: "qwen3-coder", MaxTokens: 100,
 		Messages: []Message{{Role: "user", Content: []ContentBlock{{Type: "text", Text: "hi"}}}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StopReason != "tool_use" || len(resp.Content) != 1 || resp.Content[0].Name != "list_services" {
-		t.Fatalf("unexpected response: %+v", resp)
-	}
+
+	require.NoError(t, err)
+	assert.Equal(t, "tool_use", resp.StopReason)
+	require.Len(t, resp.Content, 1)
+	assert.Equal(t, "list_services", resp.Content[0].Name)
 }
