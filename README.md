@@ -108,7 +108,7 @@ Things that differ from running against Claude:
 
 - **Context length.** Ollama's default context window is small, and through the
   Anthropic-compatible endpoint there's no request field to raise it. If the conversation
-  (system prompt + tool definitions + up to 40 log lines per `query_logs` call) outgrows it,
+  (system prompt + tool definitions + every tool result so far) outgrows it,
   Ollama silently drops the oldest tokens and the agent "forgets" evidence or its
   instructions. Set `OLLAMA_CONTEXT_LENGTH` when starting the server (or the context-length
   setting in the Ollama app).
@@ -138,10 +138,21 @@ Claude keeps calling tools without converging. In production this is the differe
 a bounded-cost request and a runaway one — every agent loop needs an explicit exit condition
 beyond "the model decided to stop."
 
-**`query_logs` truncates to 40 results and says so.** Returning every matching log line
-would blow the context window on a noisy incident. The tool result includes
-`total_matches` vs `returned` so Claude knows it's looking at a partial view and can narrow
-the query — a small but real context-engineering decision, not an accident.
+**`query_logs` groups repeated lines by default, then caps and says so.** Incident logs
+are extremely repetitive: in the mock dataset 1,663 ERROR lines are just 3 distinct
+messages. The first version returned the 40 newest raw lines, which over the incident
+window meant 40 copies of the same error and *cut off the deploy line that caused the
+incident*, as well as the moment the errors started. Now the default `grouped` mode
+returns one row per (service, level, message) with `count`, `first_seen`, `last_seen` and
+a few `sample_trace_ids`, ordered by `first_seen` so it reads as a timeline. For the
+whole incident window across all services that's ~3 KB covering every line, versus
+~8 KB of raw output covering 40 of them. `mode: "raw"` still returns individual lines
+(newest first, capped at 40), and a `trace_id` filter lets the model take a sample trace
+from a group and follow that one request across services. Both modes report totals and
+`truncated`, so the model knows when it's seeing a partial view and should narrow the
+query. Grouping is by exact message, which works because the mock messages are constant.
+Real logs need templating first (masking IDs, durations and counters, e.g. the Drain
+algorithm). That's a natural follow-up when the data layer moves to real ClickHouse.
 
 **The system prompt encodes a playbook, not just a persona** — it tells the agent the order
 of investigation (services -> metrics -> deploys -> logs -> cross-service correlation) and
@@ -153,7 +164,8 @@ should recover from a rate limit or a transient server error, not silently retry
 request into an infinite loop.
 
 **Tool definitions carry a `description` written for the model, not for a human reader** —
-e.g. `query_logs`'s description tells Claude the result cap exists and what to do about it.
+e.g. `query_logs`'s description explains grouped vs raw output, the result caps, and how
+to follow a sample trace_id across services.
 That's the same design problem as writing a good docstring, but the "reader" is the LLM
 deciding whether and how to call the tool.
 
