@@ -66,7 +66,7 @@ below (a real tracing/cost pipeline).
 
 ## Setup
 
-Requires Go 1.24+ and Python 3 (only for the one-off data generator).
+Requires Go 1.27+ and Python 3 (only for the one-off data generator).
 
 ```
 python3 scripts/gen_data.py     # writes data/*.json; the incident happens "yesterday" (UTC)
@@ -121,8 +121,11 @@ Things that differ from running against Claude:
 - **Slower turns.** Each turn can take tens of seconds once the conversation grows, hence
   `-timeout 10m`.
 
-Run the tool-layer unit tests (no API key needed — they exercise the tools directly
-against the mock dataset, not the LLM):
+Run the unit tests (no API key needed, nothing calls a real model). The tool tests run
+the tools directly against the mock dataset. The agent-loop tests
+(`internal/agent/agent_test.go`) replace the model with a scripted fake behind the
+`agent.LLM` interface and assert on the conversation the loop sends back: tool_use →
+tool_result pairing, error results, the turn cap:
 
 ```
 go test ./...

@@ -74,6 +74,15 @@ type Config struct {
 
 type toolDef = tools.Definition
 
+// LLM is the one thing the loop needs from a model: send a Messages API
+// request, get a response. It's defined here, on the consumer side, so the
+// loop doesn't depend on the concrete HTTP client — main passes a
+// *claude.Client, tests pass a scripted fake that replays canned responses
+// and records every request the loop sent.
+type LLM interface {
+	CreateMessage(ctx context.Context, req claude.Request) (*claude.Response, error)
+}
+
 func DefaultConfig() Config {
 	return Config{
 		Model:     "claude-sonnet-4-5-20250929",
@@ -83,7 +92,7 @@ func DefaultConfig() Config {
 }
 
 type Agent struct {
-	client   *claude.Client
+	client   LLM
 	registry *tools.Registry
 	store    *data.Store
 	tracer   *trace.Tracer
@@ -91,7 +100,7 @@ type Agent struct {
 	log      *stepLog
 }
 
-func New(client *claude.Client, registry *tools.Registry, store *data.Store, tracer *trace.Tracer, cfg Config) *Agent {
+func New(client LLM, registry *tools.Registry, store *data.Store, tracer *trace.Tracer, cfg Config) *Agent {
 	return &Agent{
 		client: client, registry: registry, store: store, tracer: tracer, cfg: cfg,
 		log: &stepLog{w: cfg.LogWriter, level: cfg.Verbosity},
@@ -128,17 +137,17 @@ func (a *Agent) Investigate(ctx context.Context, question string) (string, error
 
 		// Size of what we're about to send — useful for watching the context
 		// window grow turn by turn.
-		payload, _ := json.Marshal(req)
+		payload, err := json.Marshal(req)
+		if err != nil {
+			return "", a.notifyError(err, "marshal_error", nil, turn, totalInputTokens, totalOutputTokens)
+		}
 		a.log.request(turn, a.cfg.MaxTurns, len(messages), len(payload))
 
 		start := time.Now()
 		resp, err := a.client.CreateMessage(ctx, req)
 		latency := time.Since(start)
 		if err != nil {
-			a.tracer.Event("llm_error", map[string]any{"turn": turn, "error": err.Error()})
-			err = fmt.Errorf("turn %d: %w", turn, err)
-			a.log.runEnd(turn, totalInputTokens, totalOutputTokens, err)
-			return "", err
+			return "", a.notifyError(err, "llm_error", nil, turn, totalInputTokens, totalOutputTokens)
 		}
 		a.log.response(resp, latency, len(payload))
 
@@ -214,6 +223,20 @@ func (a *Agent) Investigate(ctx context.Context, question string) (string, error
 	err := fmt.Errorf("exceeded max turns (%d) without a final answer", a.cfg.MaxTurns)
 	a.log.runEnd(a.cfg.MaxTurns, totalInputTokens, totalOutputTokens, err)
 	return "", err
+}
+
+func (a *Agent) notifyError(err error, event string, extraData map[string]any, turn int, totalInputTokens, totalOutputTokens int) error {
+	data := map[string]any{
+		"turn":  turn,
+		"error": err.Error(),
+	}
+	for k, v := range extraData {
+		data[k] = v
+	}
+	a.tracer.Event(event, data)
+	err = fmt.Errorf("turn %d: %w", turn, err)
+	a.log.runEnd(turn, totalInputTokens, totalOutputTokens, err)
+	return err
 }
 
 func textOf(blocks []claude.ContentBlock) string {
