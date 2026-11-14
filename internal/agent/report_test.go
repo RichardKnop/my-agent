@@ -36,14 +36,21 @@ func TestParseReport(t *testing.T) {
 			wantErr: []string{`confidence must be one of low, medium, high (got "")`},
 		},
 		{
-			name:    "wrong type",
-			input:   `{"summary": "x", "confidence": "low", "evidence": "one string, not a list"}`,
-			wantErr: []string{"invalid report", "evidence"},
+			// What qwen3-coder actually sent: a bulleted string. The error
+			// must say what to send instead, in terms of JSON, not Go.
+			name:    "string instead of a list",
+			input:   `{"summary": "x", "confidence": "low", "evidence": "- one\n- two"}`,
+			wantErr: []string{`invalid report: evidence must be an array of strings, e.g. ["first item", "second item"], not one string (got a JSON string)`},
+		},
+		{
+			name:    "list instead of a string",
+			input:   `{"summary": ["x"], "confidence": "low"}`,
+			wantErr: []string{"invalid report: summary must be a string (got a JSON array)"},
 		},
 		{
 			name:    "malformed JSON",
 			input:   `{"summary": `,
-			wantErr: []string{"invalid report"},
+			wantErr: []string{"invalid report: the input is not a valid JSON object"},
 		},
 	}
 	for _, tc := range cases {
@@ -62,6 +69,7 @@ func TestParseReport(t *testing.T) {
 			for _, want := range tc.wantErr {
 				assert.Contains(t, err.Error(), want)
 			}
+			assert.NotContains(t, err.Error(), "Go struct", "errors are for the model: no Go type names")
 		})
 	}
 }

@@ -104,7 +104,7 @@ var submitReportTool = claude.Tool{
 func parseReport(input json.RawMessage) (*Report, error) {
 	var r Report
 	if err := json.Unmarshal(input, &r); err != nil {
-		return nil, fmt.Errorf("invalid report: %w", err)
+		return nil, errors.New("invalid report: " + describeDecodeError(err))
 	}
 	var problems []string
 	if strings.TrimSpace(r.Summary) == "" {
@@ -120,6 +120,24 @@ func parseReport(input json.RawMessage) (*Report, error) {
 		return nil, errors.New("invalid report: " + strings.Join(problems, "; "))
 	}
 	return &r, nil
+}
+
+// describeDecodeError turns a JSON decoding error into an instruction the
+// model can act on. Go's own message ("cannot unmarshal string into Go struct
+// field Report.evidence of type []string") names Go types and structs the
+// model has never seen; a retry is more likely to succeed when the error says
+// what the field should look like.
+func describeDecodeError(err error) string {
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) && typeErr.Field != "" {
+		field, _, _ := strings.Cut(typeErr.Field, ".")
+		want := "a string"
+		if prop, ok := submitReportTool.InputSchema["properties"].(map[string]any)[field].(map[string]any); ok && prop["type"] == "array" {
+			want = `an array of strings, e.g. ["first item", "second item"], not one string`
+		}
+		return fmt.Sprintf("%s must be %s (got a JSON %s)", field, want, typeErr.Value)
+	}
+	return "the input is not a valid JSON object: " + err.Error()
 }
 
 // Text renders the report for a human, in the sections the agent used to
