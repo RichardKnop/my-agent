@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"runtime"
@@ -44,7 +45,7 @@ func call(t *testing.T, store *data.Store, tool string, args any) (string, error
 	t.Helper()
 	input, err := json.Marshal(args)
 	require.NoError(t, err)
-	return NewRegistry().Call(tool, store, input)
+	return NewRegistry(store).Call(context.Background(), tool, input)
 }
 
 // mustCall is call for the happy path: the tool must succeed, and its JSON

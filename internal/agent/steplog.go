@@ -29,7 +29,7 @@ func (l *stepLog) on(level int) bool { return l.w != nil && l.level >= level }
 
 func (l *stepLog) printf(format string, args ...any) { fmt.Fprintf(l.w, format, args...) }
 
-func (l *stepLog) runStart(question, model string, now time.Time, system string, defs []toolDef) {
+func (l *stepLog) runStart(question, model string, now time.Time, system string, defs []claude.Tool) {
 	if !l.on(1) {
 		return
 	}

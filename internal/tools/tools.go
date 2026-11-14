@@ -1,11 +1,13 @@
 // Package tools implements the small set of read-only tools the agent can
 // call: list_services, query_metrics, query_logs and get_deploys. Each tool
-// has a Go implementation plus a JSON-schema Definition that gets sent to
-// Claude in the `tools` field of the Messages API request — this is the
-// same shape an MCP server would expose (see roadmap stage 3 in README).
+// has a Go implementation plus a JSON-schema Definition. The agent sends the
+// definitions to the model in the `tools` field of every Messages API
+// request; an MCP server (roadmap stage 3 in README) would expose the same
+// definitions over its own protocol.
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -15,31 +17,39 @@ import (
 	"github.com/richardknop/my-agent/internal/data"
 )
 
-// Definition mirrors Anthropic's tool schema: name, a description the model
-// uses to decide *when* to call the tool, and a JSON Schema for its input.
+// Definition describes one tool independently of any model API or
+// protocol: a name, a description the model uses to decide *when* to call
+// it, and a JSON Schema for its input. The agent converts it into the
+// Messages API's tool type; an MCP server (stage 3) would convert it into
+// MCP's.
 type Definition struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"input_schema"`
+	Name        string
+	Description string
+	InputSchema map[string]any
 }
 
-// Handler executes one tool call against the dataset and returns the
-// result already JSON-encoded, ready to go back to Claude as a tool_result.
-type Handler func(store *data.Store, input json.RawMessage) (string, error)
+// Handler executes one tool call and returns the result already
+// JSON-encoded, ready to go back to the model as a tool_result. ctx carries
+// the run's deadline, so a slow tool (a real database query, a remote MCP
+// server) can be cancelled with the rest of the run.
+type Handler func(ctx context.Context, input json.RawMessage) (string, error)
 
-// Registry pairs each tool's schema with its handler so the agent loop can
-// look either up by name without a big switch statement.
+// Registry pairs each tool's definition with its handler so the agent loop
+// can look either up by name without a big switch statement. The handlers
+// are bound to their dependencies (here, the dataset) when the registry is
+// built, so callers only ever deal in tool names and JSON input.
 type Registry struct {
 	defs     []Definition
 	handlers map[string]Handler
 }
 
-func NewRegistry() *Registry {
+// NewRegistry builds the registry of observability tools over store.
+func NewRegistry(store *data.Store) *Registry {
 	r := &Registry{handlers: map[string]Handler{}}
-	r.register(listServicesDef, listServices)
-	r.register(queryMetricsDef, queryMetrics)
-	r.register(queryLogsDef, queryLogs)
-	r.register(getDeploysDef, getDeploys)
+	r.register(listServicesDef, withStore(store, listServices))
+	r.register(queryMetricsDef, withStore(store, queryMetrics))
+	r.register(queryLogsDef, withStore(store, queryLogs))
+	r.register(getDeploysDef, withStore(store, getDeploys))
 	return r
 }
 
@@ -50,12 +60,21 @@ func (r *Registry) register(def Definition, h Handler) {
 
 func (r *Registry) Definitions() []Definition { return r.defs }
 
-func (r *Registry) Call(name string, store *data.Store, input json.RawMessage) (string, error) {
+func (r *Registry) Call(ctx context.Context, name string, input json.RawMessage) (string, error) {
 	h, ok := r.handlers[name]
 	if !ok {
 		return "", fmt.Errorf("unknown tool %q", name)
 	}
-	return h(store, input)
+	return h(ctx, input)
+}
+
+// withStore adapts a tool function over the in-memory dataset into a
+// Handler. The dataset is in memory, so these tools have nothing to cancel
+// and ignore ctx.
+func withStore(store *data.Store, fn func(*data.Store, json.RawMessage) (string, error)) Handler {
+	return func(_ context.Context, input json.RawMessage) (string, error) {
+		return fn(store, input)
+	}
 }
 
 // ---- list_services ----

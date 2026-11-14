@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/richardknop/my-agent/internal/claude"
-	"github.com/richardknop/my-agent/internal/data"
 	"github.com/richardknop/my-agent/internal/tools"
 	"github.com/richardknop/my-agent/internal/trace"
 )
@@ -72,8 +71,6 @@ type Config struct {
 	LogWriter io.Writer
 }
 
-type toolDef = tools.Definition
-
 // LLM is the one thing the loop needs from a model: send a Messages API
 // request, get a response. It's defined here, on the consumer side, so the
 // loop doesn't depend on the concrete HTTP client — main passes a
@@ -91,25 +88,44 @@ func DefaultConfig() Config {
 	}
 }
 
+// Agent runs the loop. Note what it does *not* know about: the dataset.
+// Tools are just "list the definitions, call one by name", so the loop
+// works the same whether a tool reads in-memory JSON, queries ClickHouse,
+// or (stage 3) is served by an MCP server.
 type Agent struct {
 	client   LLM
 	registry *tools.Registry
-	store    *data.Store
 	tracer   *trace.Tracer
 	cfg      Config
 	log      *stepLog
 }
 
-func New(client LLM, registry *tools.Registry, store *data.Store, tracer *trace.Tracer, cfg Config) *Agent {
+func New(client LLM, registry *tools.Registry, tracer *trace.Tracer, cfg Config) *Agent {
 	return &Agent{
-		client: client, registry: registry, store: store, tracer: tracer, cfg: cfg,
+		client: client, registry: registry, tracer: tracer, cfg: cfg,
 		log: &stepLog{w: cfg.LogWriter, level: cfg.Verbosity},
 	}
 }
 
+// runStats accumulates what the end-of-run record reports.
+type runStats struct {
+	turns        int
+	inputTokens  int
+	outputTokens int
+}
+
 // Investigate runs the agent loop for one question and returns Claude's
-// final text answer.
+// final text answer. Every run, however it ends (answer, model API error,
+// turn cap), goes through finish exactly once, so the trace always ends with
+// a run_end event and the step log always prints a summary.
 func (a *Agent) Investigate(ctx context.Context, question string) (string, error) {
+	var stats runStats
+	answer, err := a.run(ctx, question, &stats)
+	a.finish(stats, err)
+	return answer, err
+}
+
+func (a *Agent) run(ctx context.Context, question string, stats *runStats) (string, error) {
 	messages := []claude.Message{
 		{Role: "user", Content: []claude.ContentBlock{{Type: "text", Text: question}}},
 	}
@@ -121,25 +137,24 @@ func (a *Agent) Investigate(ctx context.Context, question string) (string, error
 		now = time.Now()
 	}
 	system := buildSystemPrompt(now)
-	defs := a.registry.Definitions()
-	a.log.runStart(question, a.cfg.Model, now, system, defs)
-
-	totalInputTokens, totalOutputTokens := 0, 0
+	apiTools := toAPITools(a.registry.Definitions())
+	a.log.runStart(question, a.cfg.Model, now, system, apiTools)
 
 	for turn := 1; turn <= a.cfg.MaxTurns; turn++ {
+		stats.turns = turn
 		req := claude.Request{
 			Model:     a.cfg.Model,
 			MaxTokens: a.cfg.MaxTokens,
 			System:    system,
 			Messages:  messages,
-			Tools:     defs,
+			Tools:     apiTools,
 		}
 
 		// Size of what we're about to send — useful for watching the context
 		// window grow turn by turn.
 		payload, err := json.Marshal(req)
 		if err != nil {
-			return "", a.notifyError(err, "marshal_error", nil, turn, totalInputTokens, totalOutputTokens)
+			return "", fmt.Errorf("turn %d: marshal request: %w", turn, err)
 		}
 		a.log.request(turn, a.cfg.MaxTurns, len(messages), len(payload))
 
@@ -147,12 +162,17 @@ func (a *Agent) Investigate(ctx context.Context, question string) (string, error
 		resp, err := a.client.CreateMessage(ctx, req)
 		latency := time.Since(start)
 		if err != nil {
-			return "", a.notifyError(err, "llm_error", nil, turn, totalInputTokens, totalOutputTokens)
+			a.tracer.Event("llm_error", map[string]any{
+				"turn":       turn,
+				"latency_ms": latency.Milliseconds(),
+				"error":      err.Error(),
+			})
+			return "", fmt.Errorf("turn %d: %w", turn, err)
 		}
 		a.log.response(resp, latency, len(payload))
 
-		totalInputTokens += resp.Usage.InputTokens
-		totalOutputTokens += resp.Usage.OutputTokens
+		stats.inputTokens += resp.Usage.InputTokens
+		stats.outputTokens += resp.Usage.OutputTokens
 		a.tracer.Event("llm_response", map[string]any{
 			"turn":          turn,
 			"latency_ms":    latency.Milliseconds(),
@@ -165,12 +185,6 @@ func (a *Agent) Investigate(ctx context.Context, question string) (string, error
 		messages = append(messages, claude.Message{Role: "assistant", Content: resp.Content})
 
 		if resp.StopReason != "tool_use" {
-			a.tracer.Event("run_end", map[string]any{
-				"turns":               turn,
-				"total_input_tokens":  totalInputTokens,
-				"total_output_tokens": totalOutputTokens,
-			})
-			a.log.runEnd(turn, totalInputTokens, totalOutputTokens, nil)
 			return textOf(resp.Content), nil
 		}
 
@@ -179,33 +193,7 @@ func (a *Agent) Investigate(ctx context.Context, question string) (string, error
 			if block.Type != "tool_use" {
 				continue
 			}
-
-			toolStart := time.Now()
-			result, callErr := a.registry.Call(block.Name, a.store, block.Input)
-			toolLatency := time.Since(toolStart)
-
-			isError := callErr != nil
-			content := result
-			if callErr != nil {
-				content = callErr.Error()
-			}
-
-			a.tracer.Event("tool_call", map[string]any{
-				"turn":       turn,
-				"tool":       block.Name,
-				"input":      string(block.Input),
-				"latency_ms": toolLatency.Milliseconds(),
-				"is_error":   isError,
-				"result_len": len(content),
-			})
-			a.log.toolCall(block.Name, block.Input, result, callErr, toolLatency)
-
-			resultBlocks = append(resultBlocks, claude.ContentBlock{
-				Type:      "tool_result",
-				ToolUseID: block.ID,
-				Content:   content,
-				IsError:   isError,
-			})
+			resultBlocks = append(resultBlocks, a.callTool(ctx, turn, block))
 		}
 
 		if len(resultBlocks) > 0 {
@@ -214,29 +202,65 @@ func (a *Agent) Investigate(ctx context.Context, question string) (string, error
 		}
 	}
 
-	a.tracer.Event("run_end", map[string]any{
-		"turns":               a.cfg.MaxTurns,
-		"total_input_tokens":  totalInputTokens,
-		"total_output_tokens": totalOutputTokens,
-		"error":               "max turns exceeded",
-	})
-	err := fmt.Errorf("exceeded max turns (%d) without a final answer", a.cfg.MaxTurns)
-	a.log.runEnd(a.cfg.MaxTurns, totalInputTokens, totalOutputTokens, err)
-	return "", err
+	return "", fmt.Errorf("exceeded max turns (%d) without a final answer", a.cfg.MaxTurns)
 }
 
-func (a *Agent) notifyError(err error, event string, extraData map[string]any, turn int, totalInputTokens, totalOutputTokens int) error {
-	data := map[string]any{
-		"turn":  turn,
-		"error": err.Error(),
+// callTool runs one tool_use block and turns the outcome into the matching
+// tool_result block. A failing tool is not a failed run: the error text goes
+// back to the model with is_error set, so it can correct itself.
+func (a *Agent) callTool(ctx context.Context, turn int, block claude.ContentBlock) claude.ContentBlock {
+	start := time.Now()
+	result, err := a.registry.Call(ctx, block.Name, block.Input)
+	latency := time.Since(start)
+
+	content := result
+	if err != nil {
+		content = err.Error()
 	}
-	for k, v := range extraData {
-		data[k] = v
+
+	a.tracer.Event("tool_call", map[string]any{
+		"turn":       turn,
+		"tool":       block.Name,
+		"input":      string(block.Input),
+		"latency_ms": latency.Milliseconds(),
+		"is_error":   err != nil,
+		"result_len": len(content),
+	})
+	a.log.toolCall(block.Name, block.Input, result, err, latency)
+
+	return claude.ContentBlock{
+		Type:      "tool_result",
+		ToolUseID: block.ID,
+		Content:   content,
+		IsError:   err != nil,
 	}
-	a.tracer.Event(event, data)
-	err = fmt.Errorf("turn %d: %w", turn, err)
-	a.log.runEnd(turn, totalInputTokens, totalOutputTokens, err)
-	return err
+}
+
+// finish writes the end-of-run record to the trace and the step log.
+func (a *Agent) finish(stats runStats, err error) {
+	fields := map[string]any{
+		"turns":               stats.turns,
+		"total_input_tokens":  stats.inputTokens,
+		"total_output_tokens": stats.outputTokens,
+	}
+	if err != nil {
+		fields["error"] = err.Error()
+	}
+	a.tracer.Event("run_end", fields)
+	a.log.runEnd(stats.turns, stats.inputTokens, stats.outputTokens, err)
+}
+
+// toAPITools converts our tool definitions into the Messages API's tool
+// type. They have the same fields today, but they're separate types on
+// purpose: tools describes what a tool is, claude describes what goes on the
+// wire to one particular model API. An MCP server (stage 3) would describe
+// the same tools in its own protocol's shape.
+func toAPITools(defs []tools.Definition) []claude.Tool {
+	out := make([]claude.Tool, len(defs))
+	for i, d := range defs {
+		out[i] = claude.Tool{Name: d.Name, Description: d.Description, InputSchema: d.InputSchema}
+	}
+	return out
 }
 
 func textOf(blocks []claude.ContentBlock) string {
