@@ -57,6 +57,17 @@ func mustCall(t *testing.T, store *data.Store, tool string, args, out any) {
 	require.NoError(t, json.Unmarshal([]byte(res), out))
 }
 
+type metricsResult struct {
+	RawPoints   int            `json:"raw_points"`
+	StepSeconds int            `json:"step_seconds"`
+	Points      []MetricBucket `json:"points"`
+	Summary     struct {
+		Median float64 `json:"median"`
+		Max    float64 `json:"max"`
+		MaxAt  string  `json:"max_at"`
+	} `json:"summary"`
+}
+
 type groupedLogsResult struct {
 	Mode           string     `json:"mode"`
 	TotalMatches   int        `json:"total_matches"`
@@ -93,22 +104,88 @@ func TestQueryMetricsFindsIncidentSpike(t *testing.T) {
 	store := loadTestStore(t)
 	day := incidentDay(t, store)
 
-	var result struct {
-		Summary struct {
-			Max float64 `json:"max"`
-		} `json:"summary"`
-	}
+	var res metricsResult
 	mustCall(t, store, "query_metrics", map[string]string{
 		"service": "payments",
 		"metric":  "error_rate",
 		"start":   day + "T14:00:00Z",
 		"end":     day + "T15:00:00Z",
-	}, &result)
+	}, &res)
 
 	// Baseline error_rate for payments is ~0.2%; the incident should push
-	// the max well past that within this window.
-	assert.GreaterOrEqual(t, result.Summary.Max, 5.0,
+	// the max well past that within this window, after the 14:31 deploy.
+	assert.GreaterOrEqual(t, res.Summary.Max, 5.0,
 		"expected a clear error_rate spike for payments in the incident window")
+	assert.Less(t, res.Summary.Median, res.Summary.Max)
+	assert.GreaterOrEqual(t, res.Summary.MaxAt, day+"T14:31:00Z", "the peak comes after the deploy")
+}
+
+// A wide window (the model asked for 15 hours in a real run) is averaged
+// into at most maxMetricPoints buckets, and the spike survives in the
+// buckets' max even where the avg smooths it.
+func TestQueryMetricsDownsamplesLongWindows(t *testing.T) {
+	store := loadTestStore(t)
+	day := incidentDay(t, store)
+
+	var res metricsResult
+	mustCall(t, store, "query_metrics", map[string]string{
+		"service": "payments",
+		"metric":  "error_rate",
+		"start":   day + "T00:00:00Z",
+		"end":     day + "T23:59:59Z",
+	}, &res)
+
+	require.Greater(t, res.RawPoints, maxMetricPoints, "precondition: more raw points than the cap")
+	assert.LessOrEqual(t, len(res.Points), maxMetricPoints)
+	perBucket := (res.RawPoints + maxMetricPoints - 1) / maxMetricPoints
+	assert.Equal(t, 60*perBucket, res.StepSeconds)
+
+	peak := 0.0
+	for _, p := range res.Points {
+		assert.GreaterOrEqual(t, p.Max, p.Avg)
+		peak = max(peak, p.Max)
+	}
+	assert.Equal(t, res.Summary.Max, peak, "bucket maxima preserve the true peak")
+}
+
+func TestQueryMetricsNarrowWindowIsFullResolution(t *testing.T) {
+	store := loadTestStore(t)
+	day := incidentDay(t, store)
+
+	var res metricsResult
+	mustCall(t, store, "query_metrics", map[string]string{
+		"service": "payments",
+		"metric":  "error_rate",
+		"start":   day + "T14:25:00Z",
+		"end":     day + "T14:45:00Z",
+	}, &res)
+
+	assert.Equal(t, 20, res.RawPoints)
+	assert.Len(t, res.Points, 20)
+	assert.Equal(t, 60, res.StepSeconds)
+	for _, p := range res.Points {
+		assert.Equal(t, p.Avg, p.Max, "one raw point per bucket")
+	}
+}
+
+func TestBucketMetrics(t *testing.T) {
+	points := []data.MetricPoint{
+		{TS: "t0", Value: 1}, {TS: "t1", Value: 2}, {TS: "t2", Value: 6},
+		{TS: "t3", Value: 1}, {TS: "t4", Value: 1}, {TS: "t5", Value: 1},
+		{TS: "t6", Value: 9},
+	}
+
+	buckets, perBucket := bucketMetrics(points, 3)
+
+	assert.Equal(t, 3, perBucket, "ceil(7/3)")
+	assert.Equal(t, []MetricBucket{
+		{TS: "t0", Avg: 3, Max: 6},
+		{TS: "t3", Avg: 1, Max: 1},
+		{TS: "t6", Avg: 9, Max: 9}, // last bucket is partial
+	}, buckets)
+
+	empty, _ := bucketMetrics(nil, 3)
+	assert.Empty(t, empty)
 }
 
 func TestQueryMetricsUnknownServiceErrors(t *testing.T) {

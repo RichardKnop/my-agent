@@ -13,6 +13,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/richardknop/my-agent/internal/data"
 )
@@ -96,10 +97,34 @@ func listServices(store *data.Store, _ json.RawMessage) (string, error) {
 
 // ---- query_metrics ----
 
+// query_metrics can't deduplicate the way query_logs does (every point is
+// unique), but the model rarely needs every point either: it needs to know
+// whether a series moved, when, and how far. So the tool:
+//
+//   - caps the number of points per response at maxMetricPoints by averaging
+//     consecutive points into equal-width buckets. Each bucket reports avg
+//     *and* max, because averaging alone flattens a short spike. A narrow
+//     window comes back at full resolution: overview first, then zoom in,
+//     the same pattern as grouped logs.
+//   - does the arithmetic in the summary (median as a baseline, max and
+//     when it happened), so the model doesn't have to scan numbers itself.
+//
+// Each bucket keeps an explicit timestamp. A columnar encoding (start +
+// step + an array of values) would be smaller still, but it makes the model
+// count array positions to work out times, which LLMs are bad at.
+const maxMetricPoints = 30
+
 var queryMetricsDef = Definition{
 	Name: "query_metrics",
-	Description: "Return a time series for one metric on one service, restricted to a time window. " +
-		"Use this to check whether a service's error rate or latency actually moved, and when.",
+	Description: fmt.Sprintf(
+		"Return a time series for one metric on one service, restricted to a time window, plus a "+
+			"summary (min, median, avg, max and max_at, the timestamp of the peak). Use this to check "+
+			"whether a service's error rate or latency actually moved, and when.\n\n"+
+			"At most %d points are returned. Longer windows are downsampled into equal-width buckets, "+
+			"each with the avg and max of the raw points inside it; step_seconds in the result gives "+
+			"the bucket width. To see full resolution around an event, query again with a narrower "+
+			"window.",
+		maxMetricPoints),
 	InputSchema: map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -131,6 +156,14 @@ type metricsArgs struct {
 	End     string `json:"end"`
 }
 
+// MetricBucket is one point of query_metrics output: the avg and max of the
+// raw points in [TS, TS+step).
+type MetricBucket struct {
+	TS  string  `json:"ts"`
+	Avg float64 `json:"avg"`
+	Max float64 `json:"max"`
+}
+
 func queryMetrics(store *data.Store, input json.RawMessage) (string, error) {
 	var a metricsArgs
 	if err := json.Unmarshal(input, &a); err != nil {
@@ -145,41 +178,84 @@ func queryMetrics(store *data.Store, input json.RawMessage) (string, error) {
 		return "", fmt.Errorf("unknown metric %q for service %q", a.Metric, a.Service)
 	}
 
-	var out []data.MetricPoint
+	var raw []data.MetricPoint
 	for _, p := range series {
 		if inRange(p.TS, a.Start, a.End) {
-			out = append(out, p)
+			raw = append(raw, p)
 		}
 	}
 
-	summary := summarize(out)
+	points, perBucket := bucketMetrics(raw, maxMetricPoints)
 	return encode(map[string]any{
-		"service": a.Service,
-		"metric":  a.Metric,
-		"points":  out,
-		"summary": summary,
+		"service":      a.Service,
+		"metric":       a.Metric,
+		"raw_points":   len(raw),
+		"step_seconds": stepSeconds(raw) * perBucket,
+		"points":       points,
+		"summary":      summarize(raw),
 	})
+}
+
+// bucketMetrics averages consecutive points into at most maxPoints buckets
+// of equal size (the last one may be smaller), and reports how many raw
+// points went into each bucket. Points must be in time order.
+func bucketMetrics(points []data.MetricPoint, maxPoints int) ([]MetricBucket, int) {
+	if len(points) == 0 {
+		return []MetricBucket{}, 1
+	}
+	perBucket := (len(points) + maxPoints - 1) / maxPoints // ceil
+	var out []MetricBucket
+	for i := 0; i < len(points); i += perBucket {
+		chunk := points[i:min(i+perBucket, len(points))]
+		b := MetricBucket{TS: chunk[0].TS, Max: chunk[0].Value}
+		sum := 0.0
+		for _, p := range chunk {
+			sum += p.Value
+			b.Max = max(b.Max, p.Value)
+		}
+		b.Avg = round2(sum / float64(len(chunk)))
+		b.Max = round2(b.Max)
+		out = append(out, b)
+	}
+	return out, perBucket
+}
+
+// stepSeconds infers the series' native resolution from its first two
+// points (60 for the mock dataset); 0 if it can't tell.
+func stepSeconds(points []data.MetricPoint) int {
+	if len(points) < 2 {
+		return 0
+	}
+	t0, err0 := time.Parse(time.RFC3339, points[0].TS)
+	t1, err1 := time.Parse(time.RFC3339, points[1].TS)
+	if err0 != nil || err1 != nil {
+		return 0
+	}
+	return int(t1.Sub(t0).Seconds())
 }
 
 func summarize(points []data.MetricPoint) map[string]any {
 	if len(points) == 0 {
 		return map[string]any{"count": 0}
 	}
-	min, max, sum := points[0].Value, points[0].Value, 0.0
-	for _, p := range points {
-		if p.Value < min {
-			min = p.Value
-		}
-		if p.Value > max {
-			max = p.Value
-		}
+	values := make([]float64, len(points))
+	peak := points[0]
+	sum := 0.0
+	for i, p := range points {
+		values[i] = p.Value
 		sum += p.Value
+		if p.Value > peak.Value {
+			peak = p
+		}
 	}
+	slices.Sort(values)
 	return map[string]any{
-		"count": len(points),
-		"min":   round2(min),
-		"max":   round2(max),
-		"avg":   round2(sum / float64(len(points))),
+		"count":  len(points),
+		"min":    round2(values[0]),
+		"median": round2(values[len(values)/2]),
+		"avg":    round2(sum / float64(len(points))),
+		"max":    round2(peak.Value),
+		"max_at": peak.TS,
 	}
 }
 

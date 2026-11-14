@@ -105,6 +105,8 @@ func TestInvestigate_FinalAnswerWithoutTools(t *testing.T) {
 
 	req := llm.requests[0]
 	assert.Equal(t, DefaultConfig().Model, req.Model)
+	assert.Contains(t, req.System, "at most 8 turns", "the system prompt must state the turn budget")
+	assert.Nil(t, req.ToolChoice, "tool use is left to the model before the final turn")
 	assert.Contains(t, req.System, "Current time: 2026-08-24T09:00:00Z (Monday)",
 		"the system prompt must tell the model what 'now' is")
 	// Every registry definition goes on the wire unchanged, converted to the
@@ -217,6 +219,7 @@ func TestInvestigate_StopsAtMaxTurns(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeded max turns (3)")
+	assert.Contains(t, err.Error(), "kept calling tools on the final turn")
 	assert.Empty(t, answer)
 	assert.Len(t, llm.requests, 3, "no LLM call beyond the turn cap")
 }
@@ -292,6 +295,7 @@ func TestInvestigate_EveryRunEndsWithOneRunEndEvent(t *testing.T) {
 		wantTurns int
 		wantIn    int    // total input tokens: 100 per successful response
 		wantError string // empty = success
+		wantForce bool   // budget_exhausted
 	}{
 		{
 			name:      "final answer",
@@ -315,6 +319,14 @@ func TestInvestigate_EveryRunEndsWithOneRunEndEvent(t *testing.T) {
 			wantTurns: 2,
 			wantIn:    200,
 			wantError: "exceeded max turns (2)",
+		},
+		{
+			name:      "answer forced on the final turn",
+			replies:   []fakeReply{loop, reply("end_turn", textBlock("partial answer"))},
+			maxTurns:  2,
+			wantTurns: 2,
+			wantIn:    200,
+			wantForce: true,
 		},
 	}
 
@@ -348,6 +360,7 @@ func TestInvestigate_EveryRunEndsWithOneRunEndEvent(t *testing.T) {
 			if tc.wantError == "" {
 				require.NoError(t, err)
 				assert.NotContains(t, end, "error")
+				assert.Equal(t, tc.wantForce, end["budget_exhausted"])
 			} else {
 				require.Error(t, err)
 				assert.Contains(t, end["error"], tc.wantError)
@@ -355,4 +368,45 @@ func TestInvestigate_EveryRunEndsWithOneRunEndEvent(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The loop treats its turn cap as a budget the model knows about: before the
+// final turn it tells the model to answer, and on the final turn it forbids
+// tools, so a long investigation ends with a (partial) report instead of an
+// error.
+func TestInvestigate_FinalTurnForcesAnAnswer(t *testing.T) {
+	t.Parallel()
+
+	llm := &fakeLLM{replies: []fakeReply{
+		reply("tool_use", toolUse("call_1", "list_services", `{}`)),
+		reply("tool_use", toolUse("call_2", "list_services", `{}`)),
+		reply("end_turn", textBlock("Root cause: probably payments. Confidence: low")),
+	}}
+	a := newTestAgent(t, llm, 3)
+
+	answer, err := a.Investigate(context.Background(), "why?")
+
+	require.NoError(t, err)
+	assert.Equal(t, "Root cause: probably payments. Confidence: low", answer)
+	require.Len(t, llm.requests, 3)
+
+	assert.Nil(t, llm.requests[0].ToolChoice)
+	assert.Nil(t, llm.requests[1].ToolChoice)
+	assert.Equal(t, &claude.ToolChoice{Type: "none"}, llm.requests[2].ToolChoice)
+	assert.NotEmpty(t, llm.requests[2].Tools,
+		"tools are still defined on the final turn: the history contains tool_use blocks")
+
+	// Turn 2's request: results of turn 1, no note yet.
+	turn1Results := llm.requests[1].Messages[2].Content
+	require.Len(t, turn1Results, 1)
+	assert.Equal(t, "tool_result", turn1Results[0].Type)
+
+	// Final request: results of turn 2, followed by the note in the same
+	// user message (tool_result blocks first, as the API requires).
+	turn2Results := llm.requests[2].Messages[4].Content
+	require.Len(t, turn2Results, 2)
+	assert.Equal(t, "tool_result", turn2Results[0].Type)
+	assert.Equal(t, "call_2", turn2Results[0].ToolUseID)
+	assert.Equal(t, "text", turn2Results[1].Type)
+	assert.Equal(t, finalTurnNote, turn2Results[1].Text)
 }
