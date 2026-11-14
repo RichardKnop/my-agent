@@ -136,14 +136,8 @@ var queryMetricsDef = Definition{
 				"type": "string",
 				"enum": []string{"error_rate", "p99_latency_ms"},
 			},
-			"start": map[string]any{
-				"type":        "string",
-				"description": "RFC3339 start timestamp, inclusive, e.g. \"2026-01-31T14:00:00Z\".",
-			},
-			"end": map[string]any{
-				"type":        "string",
-				"description": "RFC3339 end timestamp, exclusive.",
-			},
+			"start": startSchema,
+			"end":   endSchema,
 		},
 		"required": []string{"service", "metric", "start", "end"},
 	},
@@ -168,6 +162,10 @@ func queryMetrics(store *data.Store, input json.RawMessage) (string, error) {
 	var a metricsArgs
 	if err := json.Unmarshal(input, &a); err != nil {
 		return "", fmt.Errorf("bad input: %w", err)
+	}
+	var err error
+	if a.Start, a.End, err = parseWindow(a.Start, a.End); err != nil {
+		return "", err
 	}
 	svc, ok := store.Metrics[a.Service]
 	if !ok {
@@ -330,12 +328,8 @@ var queryLogsDef = Definition{
 				"enum":        []string{logModeGrouped, logModeRaw},
 				"description": "\"grouped\" (default) collapses identical lines with counts; \"raw\" returns individual lines.",
 			},
-			"start": map[string]any{
-				"type": "string",
-			},
-			"end": map[string]any{
-				"type": "string",
-			},
+			"start": startSchema,
+			"end":   endSchema,
 		},
 		"required": []string{"start", "end"},
 	},
@@ -366,6 +360,10 @@ func queryLogs(store *data.Store, input json.RawMessage) (string, error) {
 	var a logsArgs
 	if err := json.Unmarshal(input, &a); err != nil {
 		return "", fmt.Errorf("bad input: %w", err)
+	}
+	var err error
+	if a.Start, a.End, err = parseWindow(a.Start, a.End); err != nil {
+		return "", err
 	}
 	if a.Mode == "" {
 		a.Mode = logModeGrouped
@@ -488,8 +486,8 @@ var getDeploysDef = Definition{
 				"type":        "string",
 				"description": "Optional service name filter.",
 			},
-			"start": map[string]any{"type": "string"},
-			"end":   map[string]any{"type": "string"},
+			"start": startSchema,
+			"end":   endSchema,
 		},
 		"required": []string{"start", "end"},
 	},
@@ -505,6 +503,10 @@ func getDeploys(store *data.Store, input json.RawMessage) (string, error) {
 	var a deploysArgs
 	if err := json.Unmarshal(input, &a); err != nil {
 		return "", fmt.Errorf("bad input: %w", err)
+	}
+	var err error
+	if a.Start, a.End, err = parseWindow(a.Start, a.End); err != nil {
+		return "", err
 	}
 
 	var out []data.Deploy
@@ -523,17 +525,61 @@ func getDeploys(store *data.Store, input json.RawMessage) (string, error) {
 
 // ---- shared helpers ----
 
+// startSchema and endSchema describe the time window every query tool takes.
+var (
+	startSchema = map[string]any{
+		"type":        "string",
+		"description": "RFC3339 start timestamp, inclusive, e.g. \"2026-01-31T14:00:00Z\".",
+	}
+	endSchema = map[string]any{
+		"type":        "string",
+		"description": "RFC3339 end timestamp, exclusive, e.g. \"2026-01-31T16:00:00Z\".",
+	}
+)
+
+// parseWindow validates a tool's start/end arguments and normalizes them to
+// RFC3339 in UTC ("2026-01-31T14:31:00Z"), the format of every timestamp in
+// the dataset.
+//
+// This matters more than it looks. inRange compares strings, so without it
+// "2026-01-31T14:00:00+00:00" or "2026-01-31 14:00" would be compared
+// character by character and silently match the wrong lines, or none. An
+// empty result is the worst failure for an agent: "no errors in that window"
+// reads as evidence, and the model reasons confidently from it. A clear
+// error with an example lets the model fix its call instead.
+func parseWindow(start, end string) (string, string, error) {
+	s, err := parseTimestamp("start", start)
+	if err != nil {
+		return "", "", err
+	}
+	e, err := parseTimestamp("end", end)
+	if err != nil {
+		return "", "", err
+	}
+	if !s.Before(e) {
+		return "", "", fmt.Errorf("start (%s) must be before end (%s)", start, end)
+	}
+	return s.UTC().Format(time.RFC3339), e.UTC().Format(time.RFC3339), nil
+}
+
+func parseTimestamp(name, v string) (time.Time, error) {
+	const example = "2026-01-31T14:00:00Z"
+	if v == "" {
+		return time.Time{}, fmt.Errorf("%s is required: an RFC3339 timestamp like %q", name, example)
+	}
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid %s %q: must be an RFC3339 timestamp like %q", name, v, example)
+	}
+	return t, nil
+}
+
 // inRange does plain string comparison, which works because every
-// timestamp in the dataset is RFC3339 in UTC ("2026-01-31T14:31:00Z") —
-// that format sorts lexicographically in time order.
+// timestamp in the dataset, and every start/end after parseWindow, is
+// RFC3339 in UTC ("2026-01-31T14:31:00Z"): that format sorts
+// lexicographically in time order.
 func inRange(ts, start, end string) bool {
-	if start != "" && ts < start {
-		return false
-	}
-	if end != "" && ts >= end {
-		return false
-	}
-	return true
+	return ts >= start && ts < end
 }
 
 func encode(v any) (string, error) {

@@ -8,12 +8,17 @@ payments synchronously) and then into frontend (which calls checkout).
 inventory / inventory-db are unaffected — a control group so the agent has
 to actually localize the fault instead of assuming "everything is broken".
 
-The incident day defaults to *yesterday (UTC)* relative to when you run the
-script, so a question like "why did checkout error rate spike yesterday
-afternoon?" makes sense against freshly generated data. Pin a specific day
-with --date for a reproducible dataset (e.g. for evals).
+The committed dataset is pinned: the incident day defaults to PINNED_DAY, and
+generation is seeded, so running this script reproduces data/*.json exactly.
+Run the agent against it as if it were the morning after the incident:
 
-Run: python3 scripts/gen_data.py [--date YYYY-MM-DD]
+    go run ./cmd/agent -now 2026-08-24T09:00:00Z "why did checkout error rate spike yesterday afternoon?"
+
+A pinned dataset keeps runs reproducible (and evals comparable over time).
+--date generates the same scenario on another day; --date yesterday puts it
+on yesterday's date, so the agent works without -now. Don't commit either.
+
+Run: python3 scripts/gen_data.py [--date YYYY-MM-DD|yesterday]
 Writes JSON files into data/.
 """
 import argparse
@@ -25,13 +30,16 @@ from datetime import date, datetime, timedelta, timezone
 random.seed(7)
 
 parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-parser.add_argument("--date", help="incident day, YYYY-MM-DD (UTC). Default: yesterday.")
+PINNED_DAY = "2026-08-23"
+
+parser.add_argument("--date", default=PINNED_DAY,
+                    help=f"incident day, YYYY-MM-DD (UTC) or 'yesterday'. Default: {PINNED_DAY} (the committed dataset).")
 args = parser.parse_args()
 
-if args.date:
-    INCIDENT_DAY = date.fromisoformat(args.date)
-else:
+if args.date == "yesterday":
     INCIDENT_DAY = datetime.now(timezone.utc).date() - timedelta(days=1)
+else:
+    INCIDENT_DAY = date.fromisoformat(args.date)
 
 
 def at(hour, minute, days=0):

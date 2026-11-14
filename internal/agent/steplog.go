@@ -94,7 +94,7 @@ func (l *stepLog) response(resp *claude.Response, latency time.Duration, payload
 	case "end_turn":
 		l.printf("  → no tool calls: the model is done, its text is the final answer\n")
 	case "max_tokens":
-		l.printf("  ! stop_reason=max_tokens: the answer was cut off by the MaxTokens limit\n")
+		l.printf("  ! stop_reason=max_tokens: the response was cut off by the MaxTokens limit; failing the run\n")
 	default:
 		l.printf("  → stop_reason %q treated as final\n", resp.StopReason)
 	}

@@ -388,3 +388,57 @@ func TestGetDeploysFindsIncidentDeploy(t *testing.T) {
 	require.Len(t, deploys, 1, "expected exactly 1 deploy in this window")
 	assert.Equal(t, "v2.14.0", deploys[0].Version, "expected the incident-causing deploy")
 }
+
+// Every query tool rejects a bad time window with an error the model can act
+// on, instead of silently matching nothing (string comparison would).
+func TestQueryToolsValidateTimeWindow(t *testing.T) {
+	store := loadTestStore(t)
+	day := incidentDay(t, store)
+	valid := map[string]string{"start": day + "T14:00:00Z", "end": day + "T15:00:00Z"}
+
+	cases := []struct {
+		name    string
+		window  map[string]string
+		wantErr string
+	}{
+		{"missing start", map[string]string{"end": valid["end"]}, "start is required"},
+		{"missing end", map[string]string{"start": valid["start"]}, "end is required"},
+		{"space instead of T", map[string]string{"start": day + " 14:00:00", "end": valid["end"]}, `invalid start "` + day + ` 14:00:00"`},
+		{"date only", map[string]string{"start": valid["start"], "end": day}, "invalid end"},
+		{"start after end", map[string]string{"start": valid["end"], "end": valid["start"]}, "must be before end"},
+		{"empty window", map[string]string{"start": valid["start"], "end": valid["start"]}, "must be before end"},
+	}
+	for _, tool := range []string{"query_metrics", "query_logs", "get_deploys"} {
+		for _, tc := range cases {
+			t.Run(tool+"/"+tc.name, func(t *testing.T) {
+				args := map[string]string{"service": "payments", "metric": "error_rate"}
+				for k, v := range tc.window {
+					args[k] = v
+				}
+				_, err := call(t, store, tool, args)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				if !strings.Contains(tc.wantErr, "before") {
+					assert.Contains(t, err.Error(), "2026-01-31T14:00:00Z", "format errors show an example")
+				}
+			})
+		}
+	}
+}
+
+// Timestamps with a UTC offset are converted, not compared as strings:
+// 16:00+02:00 is 14:00Z.
+func TestQueryToolsAcceptUTCOffsets(t *testing.T) {
+	store := loadTestStore(t)
+	day := incidentDay(t, store)
+
+	var deploys []data.Deploy
+	mustCall(t, store, "get_deploys", map[string]string{
+		"service": "payments",
+		"start":   day + "T16:00:00+02:00",
+		"end":     day + "T17:00:00+02:00",
+	}, &deploys)
+
+	require.Len(t, deploys, 1)
+	assert.Equal(t, "v2.14.0", deploys[0].Version)
+}
