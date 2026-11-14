@@ -63,16 +63,18 @@ func (l *stepLog) response(resp *claude.Response, latency time.Duration, payload
 	if !l.on(1) {
 		return
 	}
-	l.printf("← LLM response: %s, stop_reason=%s, tokens in=%d out=%d\n",
-		latency.Round(10*time.Millisecond), resp.StopReason, resp.Usage.InputTokens, resp.Usage.OutputTokens)
+	u := resp.Usage
+	cached := ""
+	if u.CacheReadInputTokens > 0 {
+		cached = fmt.Sprintf(" (+%d read from cache)", u.CacheReadInputTokens)
+	}
+	l.printf("← LLM response: %s, stop_reason=%s, tokens in=%d%s out=%d\n",
+		latency.Round(10*time.Millisecond), resp.StopReason, u.InputTokens, cached, u.OutputTokens)
 
-	// JSON-heavy text is roughly 3-4 bytes per token. If far fewer tokens
-	// were counted than the payload size implies, the server (e.g. Ollama
-	// with a small context window) most likely dropped part of the prompt.
-	if in := resp.Usage.InputTokens; in > 0 && payloadBytes/in > 8 {
-		l.printf("  ! %s sent but only %d input tokens counted (~%d bytes/token): the server may have\n"+
+	if bpt, ok := truncationSuspected(payloadBytes, u); ok {
+		l.printf("  ! %s sent but only %d prompt tokens counted (~%d bytes/token): the server may have\n"+
 			"    truncated the context. With Ollama, raise OLLAMA_CONTEXT_LENGTH.\n",
-			size(payloadBytes), in, payloadBytes/in)
+			size(payloadBytes), promptTokens(u), bpt)
 	}
 
 	for _, b := range resp.Content {
@@ -120,17 +122,50 @@ func (l *stepLog) resultsAppended(n int) {
 	l.printf("→ appended %d tool_result block(s) as a new user message; looping back to the LLM\n", n)
 }
 
-func (l *stepLog) runEnd(turns, totalIn, totalOut int, err error) {
+func (l *stepLog) finalTurnNote() {
+	if !l.on(1) {
+		return
+	}
+	l.printf("→ next turn is the last: added a note telling the model to answer without tools\n")
+}
+
+func (l *stepLog) runEnd(stats runStats, err error) {
 	if !l.on(1) {
 		return
 	}
 	l.printf("\n━━━━ run end ━━━━\n")
-	if err != nil {
+	switch {
+	case err != nil:
 		l.printf("result   : FAILED: %v\n", err)
-	} else {
-		l.printf("result   : final answer after %d turn(s)\n", turns)
+	case stats.budgetExhausted:
+		l.printf("result   : final answer after %d turn(s), forced by the turn budget (investigation was cut short)\n", stats.turns)
+	default:
+		l.printf("result   : final answer after %d turn(s)\n", stats.turns)
 	}
-	l.printf("tokens   : in=%d out=%d (input adds up across turns because each turn re-sends the history)\n\n", totalIn, totalOut)
+	l.printf("tokens   : in=%d cache_read=%d out=%d (prompt tokens add up across turns because each turn\n"+
+		"           re-sends the history; servers that cache the shared prefix count it as cache_read)\n\n",
+		stats.inputTokens, stats.cacheReadTokens, stats.outputTokens)
+}
+
+// promptTokens is the full size of the prompt the server processed. With
+// prompt caching, input_tokens counts only the part that wasn't cached;
+// Ollama, for example, reuses the conversation prefix from the previous
+// turn and reports just the newly appended tokens as input_tokens.
+func promptTokens(u claude.Usage) int {
+	return u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
+}
+
+// truncationSuspected compares the payload size with the prompt tokens the
+// server says it processed. JSON-heavy text is roughly 3-4 bytes per token;
+// far more bytes per token means the server (e.g. Ollama with a small
+// context window) most likely dropped part of the prompt.
+func truncationSuspected(payloadBytes int, u claude.Usage) (bytesPerToken int, suspected bool) {
+	pt := promptTokens(u)
+	if pt == 0 {
+		return 0, false
+	}
+	bpt := payloadBytes / pt
+	return bpt, bpt > 8
 }
 
 // ---- formatting helpers ----

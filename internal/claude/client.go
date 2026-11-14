@@ -109,6 +109,16 @@ type Request struct {
 	System    string    `json:"system,omitempty"`
 	Messages  []Message `json:"messages"`
 	Tools     []Tool    `json:"tools,omitempty"`
+	// ToolChoice nil leaves the default ("auto": the model decides).
+	ToolChoice *ToolChoice `json:"tool_choice,omitempty"`
+}
+
+// ToolChoice constrains tool use for one request. Type is "auto", "any",
+// "tool" or "none"; this project only uses "none", to force a final answer.
+// Not every Messages-API-compatible server honours it (Ollama accepts and
+// ignores it).
+type ToolChoice struct {
+	Type string `json:"type"`
 }
 
 type Usage struct {

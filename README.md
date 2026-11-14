@@ -116,8 +116,10 @@ Things that differ from running against Claude:
   ignored output format, or blaming the `inventory` control-group services. That's a
   feature for this project: running the same loop across models is a natural first step
   toward the evals stage. Lighter options if memory is tight: `qwen3:8b`, `qwen3:14b`.
-- **Token counts are approximate** and there's no prompt caching, so the token numbers
-  in traces don't map to cost the way they do for Claude.
+- **Token counts are approximate and split differently.** Ollama reuses the conversation
+  prefix it processed on the previous turn, so `input_tokens` is only the newly appended
+  part and the rest is reported as `cache_read_input_tokens`. The step log and traces show
+  both. The numbers measure local compute, not cost.
 - **Slower turns.** Each turn can take tens of seconds once the conversation grows, hence
   `-timeout 10m`.
 
@@ -125,7 +127,7 @@ Run the unit tests (no API key needed, nothing calls a real model). The tool tes
 the tools directly against the mock dataset. The agent-loop tests
 (`internal/agent/agent_test.go`) replace the model with a scripted fake behind the
 `agent.LLM` interface and assert on the conversation the loop sends back: tool_use →
-tool_result pairing, error results, the turn cap:
+tool_result pairing, error results, the turn budget and forced final answer:
 
 ```
 go test ./...
@@ -133,10 +135,34 @@ go test ./...
 
 ## Design decisions worth being able to talk about
 
-**Turn cap, not an unbounded loop.** `agent.Config.MaxTurns` (default 8) stops the loop if
-Claude keeps calling tools without converging. In production this is the difference between
-a bounded-cost request and a runaway one — every agent loop needs an explicit exit condition
-beyond "the model decided to stop."
+**A turn budget the model knows about, not just a cap.** `agent.Config.MaxTurns`
+(default 8) bounds the loop. In production this is the difference between a bounded-cost
+request and a runaway one: every agent loop needs an explicit exit condition beyond "the
+model decided to stop." But a cap the model doesn't know about just throws away work. A
+thorough model keeps checking one more service until it's cut off, and the run fails
+with nothing to show. So the budget is part of the context engineering:
+
+- the system prompt states it ("at most 8 turns, the last one has no tools");
+- the tool results before the final turn carry a note telling the model to answer now
+  with the evidence it has;
+- the final request sets `tool_choice: none`, which Anthropic enforces (Ollama accepts it
+  but ignores it, so the note does the real work there).
+
+A run that answers on the final turn is marked `budget_exhausted` in the trace: it
+succeeded, but the investigation was cut short, which is worth tracking in evals. Only
+if the model still calls tools on the final turn does the run fail.
+
+**`query_metrics` downsamples instead of deduplicating.** Every metric point is unique,
+so grouping doesn't apply, but the model rarely needs 181 one-minute points to see
+whether a series moved and when. Responses are capped at 30 points: longer windows are
+averaged into equal-width buckets that keep both `avg` and `max` (an average alone
+flattens a short spike), and the summary does the arithmetic (`median` as a baseline,
+`max` and `max_at`). Narrowing the window gives full resolution: the same "overview,
+then zoom" pattern as grouped logs. A 15-hour query went from ~7.9 KB to ~1.6 KB, and in
+one local run the metrics calls had been ~11K of a 14K-token conversation and its
+slowest turns. Buckets keep explicit timestamps rather than a compact "start + step +
+array of values" encoding, because that would make the model count array positions to
+work out times.
 
 **`query_logs` groups repeated lines by default, then caps and says so.** Incident logs
 are extremely repetitive: in the mock dataset 1,663 ERROR lines are just 3 distinct
@@ -185,8 +211,9 @@ on stdout), from `internal/agent/steplog.go`:
 
 `-v 0` silences it, `-v 1` (default) shows each step, and `-v 2` also prints the full
 system prompt, tool definitions and tool results — i.e. everything that actually enters the
-model's context window. It also warns when the payload size and the reported input tokens
-disagree badly, which usually means a local server truncated the context.
+model's context window. It also warns when the payload size and the reported prompt
+tokens (`input_tokens` plus cached tokens) disagree badly, which usually means a local
+server truncated the context.
 
 ## Trace format
 
@@ -194,9 +221,9 @@ Each run writes `traces/run-<UTC timestamp>.jsonl`. Example lines:
 
 ```json
 {"ts":"...","elapsed_ms":0,"event":"run_start","question":"...","model":"claude-sonnet-4-5-20250929"}
-{"ts":"...","elapsed_ms":1420,"event":"llm_response","turn":1,"latency_ms":1420,"stop_reason":"tool_use","input_tokens":612,"output_tokens":98}
+{"ts":"...","elapsed_ms":1420,"event":"llm_response","turn":1,"latency_ms":1420,"stop_reason":"tool_use","input_tokens":612,"cache_read_input_tokens":0,"output_tokens":98}
 {"ts":"...","elapsed_ms":1421,"event":"tool_call","turn":1,"tool":"list_services","input":"{}","latency_ms":0,"is_error":false,"result_len":540}
-{"ts":"...","elapsed_ms":9800,"event":"run_end","turns":4,"total_input_tokens":3100,"total_output_tokens":410}
+{"ts":"...","elapsed_ms":9800,"event":"run_end","turns":4,"total_input_tokens":3100,"total_cache_read_input_tokens":0,"total_output_tokens":410,"budget_exhausted":false}
 ```
 
 Every run ends with exactly one `run_end` line, however it ends. A failed run (model API
@@ -205,7 +232,7 @@ logs an `llm_error` event for its turn:
 
 ```json
 {"ts":"...","elapsed_ms":4100,"event":"llm_error","turn":3,"latency_ms":2050,"error":"messages api error (status 500): ..."}
-{"ts":"...","elapsed_ms":4100,"event":"run_end","turns":3,"total_input_tokens":2400,"total_output_tokens":160,"error":"turn 3: messages api error (status 500): ..."}
+{"ts":"...","elapsed_ms":4100,"event":"run_end","turns":3,"total_input_tokens":2400,"total_cache_read_input_tokens":0,"total_output_tokens":160,"budget_exhausted":false,"error":"turn 3: messages api error (status 500): ..."}
 ```
 
 This is deliberately the smallest possible version of agent observability. It's a flat file
