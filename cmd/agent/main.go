@@ -78,7 +78,7 @@ func main() {
 	if *verbosity > 0 {
 		fmt.Fprintf(os.Stderr, "using %s (model %s)\n\n", claude.ResolveURL(*baseURL), *model)
 	}
-	registry := tools.NewRegistry()
+	registry := tools.NewRegistry(store)
 
 	cfg := agent.DefaultConfig()
 	cfg.Model = *model
@@ -87,7 +87,7 @@ func main() {
 	cfg.Verbosity = *verbosity
 	cfg.LogWriter = os.Stderr
 
-	a := agent.New(client, registry, store, tracer, cfg)
+	a := agent.New(client, registry, tracer, cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()

@@ -15,8 +15,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/richardknop/my-agent/internal/tools"
 )
 
 const (
@@ -96,12 +94,21 @@ type Message struct {
 	Content []ContentBlock `json:"content"`
 }
 
+// Tool is a tool definition as the Messages API expects it: a name, a
+// description the model reads to decide when to call it, and a JSON Schema
+// for its input.
+type Tool struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	InputSchema map[string]any `json:"input_schema"`
+}
+
 type Request struct {
-	Model     string             `json:"model"`
-	MaxTokens int                `json:"max_tokens"`
-	System    string             `json:"system,omitempty"`
-	Messages  []Message          `json:"messages"`
-	Tools     []tools.Definition `json:"tools,omitempty"`
+	Model     string    `json:"model"`
+	MaxTokens int       `json:"max_tokens"`
+	System    string    `json:"system,omitempty"`
+	Messages  []Message `json:"messages"`
+	Tools     []Tool    `json:"tools,omitempty"`
 }
 
 type Usage struct {

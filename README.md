@@ -54,7 +54,7 @@ question
   -> agent.Investigate()
        -> claude.CreateMessage()         (send conversation + tool defs to Claude)
        -> Claude replies with tool_use   (or a final text answer)
-       -> tools.Registry.Call()          (run the tool against internal/data.Store)
+       -> tools.Registry.Call()          (run the tool by name; handlers are bound to internal/data.Store)
        -> tool_result appended to the conversation
        -> loop, until Claude stops asking for tools or MaxTurns is hit
   -> final text answer
@@ -197,6 +197,15 @@ Each run writes `traces/run-<UTC timestamp>.jsonl`. Example lines:
 {"ts":"...","elapsed_ms":1420,"event":"llm_response","turn":1,"latency_ms":1420,"stop_reason":"tool_use","input_tokens":612,"output_tokens":98}
 {"ts":"...","elapsed_ms":1421,"event":"tool_call","turn":1,"tool":"list_services","input":"{}","latency_ms":0,"is_error":false,"result_len":540}
 {"ts":"...","elapsed_ms":9800,"event":"run_end","turns":4,"total_input_tokens":3100,"total_output_tokens":410}
+```
+
+Every run ends with exactly one `run_end` line, however it ends. A failed run (model API
+error, turn cap) gets the same line plus an `error` field, and a failed model call also
+logs an `llm_error` event for its turn:
+
+```json
+{"ts":"...","elapsed_ms":4100,"event":"llm_error","turn":3,"latency_ms":2050,"error":"messages api error (status 500): ..."}
+{"ts":"...","elapsed_ms":4100,"event":"run_end","turns":3,"total_input_tokens":2400,"total_output_tokens":160,"error":"turn 3: messages api error (status 500): ..."}
 ```
 
 This is deliberately the smallest possible version of agent observability. It's a flat file

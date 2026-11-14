@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +16,7 @@ import (
 	"github.com/richardknop/my-agent/internal/claude"
 	"github.com/richardknop/my-agent/internal/data"
 	"github.com/richardknop/my-agent/internal/tools"
+	"github.com/richardknop/my-agent/internal/trace"
 )
 
 // These tests drive the agent loop with a scripted fake model instead of a
@@ -80,7 +84,7 @@ func newTestAgent(t *testing.T, llm *fakeLLM, maxTurns int) *Agent {
 	cfg.MaxTurns = maxTurns
 	cfg.Now = testNow
 	// nil tracer and nil LogWriter are both no-ops.
-	return New(llm, tools.NewRegistry(), testStore(), nil, cfg)
+	return New(llm, tools.NewRegistry(testStore()), nil, cfg)
 }
 
 // ---- tests ----
@@ -103,7 +107,13 @@ func TestInvestigate_FinalAnswerWithoutTools(t *testing.T) {
 	assert.Equal(t, DefaultConfig().Model, req.Model)
 	assert.Contains(t, req.System, "Current time: 2026-08-24T09:00:00Z (Monday)",
 		"the system prompt must tell the model what 'now' is")
-	assert.Len(t, req.Tools, len(tools.NewRegistry().Definitions()), "every tool definition is sent")
+	// Every registry definition goes on the wire unchanged, converted to the
+	// Messages API's tool type.
+	defs := tools.NewRegistry(testStore()).Definitions()
+	require.Len(t, req.Tools, len(defs))
+	for i, d := range defs {
+		assert.Equal(t, claude.Tool{Name: d.Name, Description: d.Description, InputSchema: d.InputSchema}, req.Tools[i])
+	}
 	require.Len(t, req.Messages, 1)
 	assert.Equal(t, "user", req.Messages[0].Role)
 	assert.Equal(t, "is anything broken?", req.Messages[0].Content[0].Text)
@@ -240,4 +250,109 @@ func TestInvestigate_FinalAnswerJoinsTextBlocksOnly(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "Root cause: X.\nConfidence: high", answer)
+}
+
+// newTracedTestAgent is newTestAgent with a real tracer writing to a temp
+// file, plus a function that reads back the trace events written so far.
+func newTracedTestAgent(t *testing.T, llm *fakeLLM, maxTurns int) (*Agent, func() []map[string]any) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "run.jsonl")
+	tracer, err := trace.New(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tracer.Close() })
+
+	a := newTestAgent(t, llm, maxTurns)
+	a.tracer = tracer
+
+	events := func() []map[string]any {
+		b, err := os.ReadFile(path)
+		require.NoError(t, err)
+		var out []map[string]any
+		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			var ev map[string]any
+			require.NoError(t, json.Unmarshal([]byte(line), &ev))
+			out = append(out, ev)
+		}
+		return out
+	}
+	return a, events
+}
+
+// However a run ends, the trace starts with run_start and ends with exactly
+// one run_end carrying the turn count, token totals and, on failure, the
+// error. Anything reading traces (stage 5) can rely on that.
+func TestInvestigate_EveryRunEndsWithOneRunEndEvent(t *testing.T) {
+	t.Parallel()
+
+	loop := reply("tool_use", toolUse("call", "list_services", `{}`))
+	cases := []struct {
+		name      string
+		replies   []fakeReply
+		maxTurns  int
+		wantTurns int
+		wantIn    int    // total input tokens: 100 per successful response
+		wantError string // empty = success
+	}{
+		{
+			name:      "final answer",
+			replies:   []fakeReply{loop, reply("end_turn", textBlock("done"))},
+			maxTurns:  8,
+			wantTurns: 2,
+			wantIn:    200,
+		},
+		{
+			name:      "model API error",
+			replies:   []fakeReply{loop, {err: errors.New("status 500")}},
+			maxTurns:  8,
+			wantTurns: 2,
+			wantIn:    100,
+			wantError: "turn 2: status 500",
+		},
+		{
+			name:      "turn cap",
+			replies:   []fakeReply{loop, loop},
+			maxTurns:  2,
+			wantTurns: 2,
+			wantIn:    200,
+			wantError: "exceeded max turns (2)",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			llm := &fakeLLM{replies: tc.replies}
+			a, events := newTracedTestAgent(t, llm, tc.maxTurns)
+
+			_, err := a.Investigate(context.Background(), "why?")
+
+			evs := events()
+			require.NotEmpty(t, evs)
+			assert.Equal(t, "run_start", evs[0]["event"])
+
+			var runEnds []map[string]any
+			for _, ev := range evs {
+				if ev["event"] == "run_end" {
+					runEnds = append(runEnds, ev)
+				}
+			}
+			require.Len(t, runEnds, 1, "exactly one run_end per run")
+			end := runEnds[0]
+			assert.Equal(t, end, evs[len(evs)-1], "run_end is the last event")
+
+			// JSON numbers decode as float64.
+			assert.EqualValues(t, tc.wantTurns, end["turns"])
+			assert.EqualValues(t, tc.wantIn, end["total_input_tokens"])
+
+			if tc.wantError == "" {
+				require.NoError(t, err)
+				assert.NotContains(t, end, "error")
+			} else {
+				require.Error(t, err)
+				assert.Contains(t, end["error"], tc.wantError)
+				assert.Equal(t, err.Error(), end["error"], "trace records the same error the caller gets")
+			}
+		})
+	}
 }
