@@ -95,11 +95,11 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	answer, err := a.Investigate(ctx, question)
+	report, err := a.Investigate(ctx, question)
 	if err != nil {
 		log.Fatalf("agent run failed: %v\n(trace written to %s)", err, tracePath)
 	}
 
-	fmt.Println(answer)
+	fmt.Print(report.Text())
 	fmt.Fprintf(os.Stderr, "\n--- trace written to %s ---\n", tracePath)
 }

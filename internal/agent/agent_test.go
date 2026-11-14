@@ -65,6 +65,22 @@ func reply(stopReason string, blocks ...claude.ContentBlock) fakeReply {
 	}}
 }
 
+// validReport is a well-formed submit_report input.
+const validReport = `{
+	"summary": "payments rejected connections after a config change",
+	"root_cause_service": "payments",
+	"triggering_change": "v9.9.9",
+	"affected_services": ["payments", "checkout"],
+	"evidence": ["checkout error_rate 0.4 at 14:35"],
+	"confidence": "high",
+	"confidence_reason": "deploy lines up with the errors",
+	"recommended_action": "roll back"
+}`
+
+func submit(id, input string) claude.ContentBlock {
+	return toolUse(id, submitReportToolName, input)
+}
+
 var testNow = time.Date(2026, 8, 24, 9, 0, 0, 0, time.UTC)
 
 func testStore() *data.Store {
@@ -89,53 +105,64 @@ func newTestAgent(t *testing.T, llm *fakeLLM, maxTurns int) *Agent {
 
 // ---- tests ----
 
-func TestInvestigate_FinalAnswerWithoutTools(t *testing.T) {
+func TestInvestigate_ReportWithoutTools(t *testing.T) {
 	t.Parallel()
 
 	llm := &fakeLLM{replies: []fakeReply{
-		reply("end_turn", textBlock("Root cause: nothing is broken.")),
+		reply("tool_use", submit("call_1", validReport)),
 	}}
 	a := newTestAgent(t, llm, 8)
 
-	answer, err := a.Investigate(context.Background(), "is anything broken?")
+	report, err := a.Investigate(context.Background(), "is anything broken?")
 
 	require.NoError(t, err)
-	assert.Equal(t, "Root cause: nothing is broken.", answer)
+	assert.Equal(t, &Report{
+		Summary:           "payments rejected connections after a config change",
+		RootCauseService:  "payments",
+		TriggeringChange:  "v9.9.9",
+		AffectedServices:  []string{"payments", "checkout"},
+		Evidence:          []string{"checkout error_rate 0.4 at 14:35"},
+		Confidence:        "high",
+		ConfidenceReason:  "deploy lines up with the errors",
+		RecommendedAction: "roll back",
+	}, report)
 	require.Len(t, llm.requests, 1)
 
 	req := llm.requests[0]
 	assert.Equal(t, DefaultConfig().Model, req.Model)
 	assert.Contains(t, req.System, "at most 8 turns", "the system prompt must state the turn budget")
+	assert.Contains(t, req.System, "submit_report", "the system prompt must say how to answer")
 	assert.Nil(t, req.ToolChoice, "tool use is left to the model before the final turn")
 	assert.Contains(t, req.System, "Current time: 2026-08-24T09:00:00Z (Monday)",
 		"the system prompt must tell the model what 'now' is")
 	// Every registry definition goes on the wire unchanged, converted to the
-	// Messages API's tool type.
+	// Messages API's tool type, followed by the loop's own submit_report.
 	defs := tools.NewRegistry(testStore()).Definitions()
-	require.Len(t, req.Tools, len(defs))
+	require.Len(t, req.Tools, len(defs)+1)
 	for i, d := range defs {
 		assert.Equal(t, claude.Tool{Name: d.Name, Description: d.Description, InputSchema: d.InputSchema}, req.Tools[i])
 	}
+	assert.Equal(t, submitReportTool, req.Tools[len(defs)])
 	require.Len(t, req.Messages, 1)
 	assert.Equal(t, "user", req.Messages[0].Role)
 	assert.Equal(t, "is anything broken?", req.Messages[0].Content[0].Text)
 }
 
-func TestInvestigate_ToolCallThenAnswer(t *testing.T) {
+func TestInvestigate_ToolCallThenReport(t *testing.T) {
 	t.Parallel()
 
 	llm := &fakeLLM{replies: []fakeReply{
 		reply("tool_use",
 			textBlock("Let me look at the services."),
 			toolUse("call_1", "list_services", `{}`)),
-		reply("end_turn", textBlock("payments is the culprit")),
+		reply("tool_use", submit("call_2", validReport)),
 	}}
 	a := newTestAgent(t, llm, 8)
 
-	answer, err := a.Investigate(context.Background(), "why?")
+	report, err := a.Investigate(context.Background(), "why?")
 
 	require.NoError(t, err)
-	assert.Equal(t, "payments is the culprit", answer)
+	assert.Equal(t, "payments", report.RootCauseService)
 	require.Len(t, llm.requests, 2)
 
 	// The model is stateless: turn 2 re-sends the whole conversation, i.e.
@@ -165,7 +192,7 @@ func TestInvestigate_ParallelToolCallsAnsweredInOneMessage(t *testing.T) {
 		reply("tool_use",
 			toolUse("call_a", "list_services", `{}`),
 			toolUse("call_b", "get_deploys", `{"start":"2026-08-23T00:00:00Z","end":"2026-08-24T00:00:00Z"}`)),
-		reply("end_turn", textBlock("done")),
+		reply("tool_use", submit("call_c", validReport)),
 	}}
 	a := newTestAgent(t, llm, 8)
 
@@ -189,16 +216,16 @@ func TestInvestigate_ToolErrorsAreFedBackToTheModel(t *testing.T) {
 		reply("tool_use",
 			toolUse("call_1", "no_such_tool", `{}`),
 			toolUse("call_2", "query_logs", `{"start": 42}`)), // "start" is a string, 42 will cause an error
-		reply("end_turn", textBlock("recovered")),
+		reply("tool_use", submit("call_3", validReport)),
 	}}
 	a := newTestAgent(t, llm, 8)
 
-	answer, err := a.Investigate(context.Background(), "why?")
+	report, err := a.Investigate(context.Background(), "why?")
 
 	// A failing tool is not a failed run: the error goes back as an
 	// is_error tool_result so the model can correct itself.
 	require.NoError(t, err)
-	assert.Equal(t, "recovered", answer)
+	assert.NotNil(t, report)
 
 	results := llm.requests[1].Messages[2].Content
 	require.Len(t, results, 2)
@@ -208,6 +235,82 @@ func TestInvestigate_ToolErrorsAreFedBackToTheModel(t *testing.T) {
 	assert.Contains(t, results[1].Content, "bad input")
 }
 
+// An invalid report is a tool error like any other: the model gets told what
+// was wrong and resubmits. Other tools asked for alongside it still run.
+func TestInvestigate_InvalidReportIsFedBackToTheModel(t *testing.T) {
+	t.Parallel()
+
+	llm := &fakeLLM{replies: []fakeReply{
+		reply("tool_use",
+			toolUse("call_1", "list_services", `{}`),
+			submit("call_2", `{"summary": "", "confidence": "very"}`)),
+		reply("tool_use", submit("call_3", validReport)),
+	}}
+	a := newTestAgent(t, llm, 8)
+
+	report, err := a.Investigate(context.Background(), "why?")
+
+	require.NoError(t, err)
+	assert.Equal(t, "payments", report.RootCauseService)
+
+	results := llm.requests[1].Messages[2].Content
+	require.Len(t, results, 2)
+	assert.Equal(t, "call_1", results[0].ToolUseID)
+	assert.False(t, results[0].IsError)
+	assert.Equal(t, "call_2", results[1].ToolUseID)
+	assert.True(t, results[1].IsError)
+	assert.Contains(t, results[1].Content, "summary is required")
+	assert.Contains(t, results[1].Content, `confidence must be one of low, medium, high (got "very")`)
+}
+
+// A valid report ends the run right away; tools requested in the same
+// response are not run, since nobody would read their results.
+func TestInvestigate_ValidReportEndsTheRunImmediately(t *testing.T) {
+	t.Parallel()
+
+	llm := &fakeLLM{replies: []fakeReply{
+		reply("tool_use",
+			toolUse("call_1", "no_such_tool", `{}`),
+			submit("call_2", validReport)),
+	}}
+	a, events := newTracedTestAgent(t, llm, 8)
+
+	report, err := a.Investigate(context.Background(), "why?")
+
+	require.NoError(t, err)
+	assert.NotNil(t, report)
+	assert.Len(t, llm.requests, 1)
+	for _, ev := range events() {
+		if ev["event"] == "tool_call" {
+			assert.Equal(t, submitReportToolName, ev["tool"], "no other tool ran")
+		}
+	}
+}
+
+// A plain-text reply is not an answer. The loop asks again, which costs a
+// turn, rather than accept text it can't grade.
+func TestInvestigate_PlainTextReplyGetsAReminder(t *testing.T) {
+	t.Parallel()
+
+	llm := &fakeLLM{replies: []fakeReply{
+		reply("end_turn", textBlock("Root cause: payments.")),
+		reply("tool_use", submit("call_1", validReport)),
+	}}
+	a := newTestAgent(t, llm, 8)
+
+	report, err := a.Investigate(context.Background(), "why?")
+
+	require.NoError(t, err)
+	assert.NotNil(t, report)
+	require.Len(t, llm.requests, 2)
+
+	msgs := llm.requests[1].Messages
+	require.Len(t, msgs, 3)
+	assert.Equal(t, "assistant", msgs[1].Role)
+	assert.Equal(t, "user", msgs[2].Role)
+	assert.Equal(t, []claude.ContentBlock{textBlock(submitReminder)}, msgs[2].Content)
+}
+
 func TestInvestigate_StopsAtMaxTurns(t *testing.T) {
 	t.Parallel()
 
@@ -215,13 +318,53 @@ func TestInvestigate_StopsAtMaxTurns(t *testing.T) {
 	llm := &fakeLLM{replies: []fakeReply{loop, loop, loop}}
 	a := newTestAgent(t, llm, 3)
 
-	answer, err := a.Investigate(context.Background(), "why?")
+	report, err := a.Investigate(context.Background(), "why?")
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "exceeded max turns (3)")
+	assert.Contains(t, err.Error(), "exceeded max turns (3) without a report")
 	assert.Contains(t, err.Error(), "kept calling tools on the final turn")
-	assert.Empty(t, answer)
+	assert.Nil(t, report)
 	assert.Len(t, llm.requests, 3, "no LLM call beyond the turn cap")
+}
+
+// On the final turn there is no turn left to recover in, so anything but a
+// valid report fails the run.
+func TestInvestigate_FinalTurnWithoutValidReportFails(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		final   fakeReply
+		wantErr string
+	}{
+		{
+			name:    "plain text",
+			final:   reply("end_turn", textBlock("Root cause: payments.")),
+			wantErr: "exceeded max turns (2) without a report: the model answered in plain text instead of calling submit_report",
+		},
+		{
+			name:    "invalid report",
+			final:   reply("tool_use", submit("call_2", `{"summary": "x", "confidence": "sure"}`)),
+			wantErr: "turn 2: the model submitted an invalid report on the final turn: invalid report: confidence must be",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			llm := &fakeLLM{replies: []fakeReply{
+				reply("tool_use", toolUse("call_1", "list_services", `{}`)),
+				tc.final,
+			}}
+			a := newTestAgent(t, llm, 2)
+
+			report, err := a.Investigate(context.Background(), "why?")
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+			assert.Nil(t, report)
+		})
+	}
 }
 
 func TestInvestigate_LLMErrorAbortsRun(t *testing.T) {
@@ -234,25 +377,11 @@ func TestInvestigate_LLMErrorAbortsRun(t *testing.T) {
 	}}
 	a := newTestAgent(t, llm, 8)
 
-	answer, err := a.Investigate(context.Background(), "why?")
+	report, err := a.Investigate(context.Background(), "why?")
 
 	require.ErrorIs(t, err, apiErr, "the client error is wrapped, not replaced")
 	assert.Contains(t, err.Error(), "turn 2")
-	assert.Empty(t, answer)
-}
-
-func TestInvestigate_FinalAnswerJoinsTextBlocksOnly(t *testing.T) {
-	t.Parallel()
-
-	llm := &fakeLLM{replies: []fakeReply{
-		reply("end_turn", textBlock("Root cause: X.\n"), textBlock("Confidence: high")),
-	}}
-	a := newTestAgent(t, llm, 8)
-
-	answer, err := a.Investigate(context.Background(), "why?")
-
-	require.NoError(t, err)
-	assert.Equal(t, "Root cause: X.\nConfidence: high", answer)
+	assert.Nil(t, report)
 }
 
 // newTracedTestAgent is newTestAgent with a real tracer writing to a temp
@@ -282,12 +411,13 @@ func newTracedTestAgent(t *testing.T, llm *fakeLLM, maxTurns int) (*Agent, func(
 }
 
 // However a run ends, the trace starts with run_start and ends with exactly
-// one run_end carrying the turn count, token totals and, on failure, the
-// error. Anything reading traces (stage 5) can rely on that.
+// one run_end carrying the turn count, token totals and either the report or
+// the error. Anything reading traces (stage 5) can rely on that.
 func TestInvestigate_EveryRunEndsWithOneRunEndEvent(t *testing.T) {
 	t.Parallel()
 
 	loop := reply("tool_use", toolUse("call", "list_services", `{}`))
+	done := reply("tool_use", submit("call_done", validReport))
 	cases := []struct {
 		name      string
 		replies   []fakeReply
@@ -298,8 +428,8 @@ func TestInvestigate_EveryRunEndsWithOneRunEndEvent(t *testing.T) {
 		wantForce bool   // budget_exhausted
 	}{
 		{
-			name:      "final answer",
-			replies:   []fakeReply{loop, reply("end_turn", textBlock("done"))},
+			name:      "report",
+			replies:   []fakeReply{loop, done},
 			maxTurns:  8,
 			wantTurns: 2,
 			wantIn:    200,
@@ -321,8 +451,8 @@ func TestInvestigate_EveryRunEndsWithOneRunEndEvent(t *testing.T) {
 			wantError: "exceeded max turns (2)",
 		},
 		{
-			name:      "answer forced on the final turn",
-			replies:   []fakeReply{loop, reply("end_turn", textBlock("partial answer"))},
+			name:      "report forced on the final turn",
+			replies:   []fakeReply{loop, done},
 			maxTurns:  2,
 			wantTurns: 2,
 			wantIn:    200,
@@ -361,8 +491,11 @@ func TestInvestigate_EveryRunEndsWithOneRunEndEvent(t *testing.T) {
 				require.NoError(t, err)
 				assert.NotContains(t, end, "error")
 				assert.Equal(t, tc.wantForce, end["budget_exhausted"])
+				require.Contains(t, end, "report", "run_end records the submitted report")
+				assert.Equal(t, "payments", end["report"].(map[string]any)["root_cause_service"])
 			} else {
 				require.Error(t, err)
+				assert.NotContains(t, end, "report")
 				assert.Contains(t, end["error"], tc.wantError)
 				assert.Equal(t, err.Error(), end["error"], "trace records the same error the caller gets")
 			}
@@ -371,30 +504,30 @@ func TestInvestigate_EveryRunEndsWithOneRunEndEvent(t *testing.T) {
 }
 
 // The loop treats its turn cap as a budget the model knows about: before the
-// final turn it tells the model to answer, and on the final turn it forbids
-// tools, so a long investigation ends with a (partial) report instead of an
-// error.
-func TestInvestigate_FinalTurnForcesAnAnswer(t *testing.T) {
+// final turn it tells the model to submit, and on the final turn it forces
+// submit_report, so a long investigation ends with a (partial) report instead
+// of an error.
+func TestInvestigate_FinalTurnForcesAReport(t *testing.T) {
 	t.Parallel()
 
 	llm := &fakeLLM{replies: []fakeReply{
 		reply("tool_use", toolUse("call_1", "list_services", `{}`)),
 		reply("tool_use", toolUse("call_2", "list_services", `{}`)),
-		reply("end_turn", textBlock("Root cause: probably payments. Confidence: low")),
+		reply("tool_use", submit("call_3", validReport)),
 	}}
 	a := newTestAgent(t, llm, 3)
 
-	answer, err := a.Investigate(context.Background(), "why?")
+	report, err := a.Investigate(context.Background(), "why?")
 
 	require.NoError(t, err)
-	assert.Equal(t, "Root cause: probably payments. Confidence: low", answer)
+	assert.NotNil(t, report)
 	require.Len(t, llm.requests, 3)
 
 	assert.Nil(t, llm.requests[0].ToolChoice)
 	assert.Nil(t, llm.requests[1].ToolChoice)
-	assert.Equal(t, &claude.ToolChoice{Type: "none"}, llm.requests[2].ToolChoice)
-	assert.NotEmpty(t, llm.requests[2].Tools,
-		"tools are still defined on the final turn: the history contains tool_use blocks")
+	assert.Equal(t, &claude.ToolChoice{Type: "tool", Name: submitReportToolName}, llm.requests[2].ToolChoice)
+	assert.Len(t, llm.requests[2].Tools, len(llm.requests[0].Tools),
+		"all tools are still defined on the final turn: the history contains tool_use blocks")
 
 	// Turn 2's request: results of turn 1, no note yet.
 	turn1Results := llm.requests[1].Messages[2].Content
@@ -417,14 +550,14 @@ func TestInvestigate_CutOffResponseFailsTheRun(t *testing.T) {
 	t.Parallel()
 
 	llm := &fakeLLM{replies: []fakeReply{
-		reply("max_tokens", textBlock("Root cause: a deploy of pay")),
+		reply("max_tokens", submit("call_1", `{"summary": "a deploy of pay`)),
 	}}
 	a := newTestAgent(t, llm, 8)
 
-	answer, err := a.Investigate(context.Background(), "why?")
+	report, err := a.Investigate(context.Background(), "why?")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "turn 1: response cut off at max_tokens (4096)")
-	assert.Empty(t, answer)
+	assert.Nil(t, report)
 	assert.Len(t, llm.requests, 1, "no further turns after a cut-off response")
 }

@@ -21,11 +21,16 @@ committed dataset; see **Dates** below.)
 
 and it will call a small set of read-only tools (`list_services`, `query_metrics`,
 `query_logs`, `get_deploys`) against a mock observability dataset, reason across the
-results over several turns, and produce a structured incident report:
+results over several turns, and answer by submitting a structured incident report
+through a `submit_report` tool, which the CLI prints as:
 
 ```
 Root cause: ...
-Evidence: ...
+Root-cause service: ...
+Triggering change: ...
+Affected services: ...
+Evidence:
+  - ...
 Confidence: ...
 Recommended action: ...
 ```
@@ -56,11 +61,11 @@ Data flow for one question:
 question
   -> agent.Investigate()
        -> claude.CreateMessage()         (send conversation + tool defs to Claude)
-       -> Claude replies with tool_use   (or a final text answer)
+       -> Claude replies with tool_use
        -> tools.Registry.Call()          (run the tool by name; handlers are bound to internal/data.Store)
        -> tool_result appended to the conversation
-       -> loop, until Claude stops asking for tools or MaxTurns is hit
-  -> final text answer
+       -> loop, until Claude calls submit_report with a valid report or MaxTurns is hit
+  -> agent.Report
 ```
 
 Every LLM call and tool call is written to `traces/run-<timestamp>.jsonl` as it happens —
@@ -139,7 +144,8 @@ Run the unit tests (no API key needed, nothing calls a real model). The tool tes
 the tools directly against the mock dataset. The agent-loop tests
 (`internal/agent/agent_test.go`) replace the model with a scripted fake behind the
 `agent.LLM` interface and assert on the conversation the loop sends back: tool_use →
-tool_result pairing, error results, the turn budget and forced final answer:
+tool_result pairing, error results, report validation, the turn budget and the forced
+final report:
 
 ```
 go test ./...
@@ -154,15 +160,36 @@ model decided to stop." But a cap the model doesn't know about just throws away 
 thorough model keeps checking one more service until it's cut off, and the run fails
 with nothing to show. So the budget is part of the context engineering:
 
-- the system prompt states it ("at most 8 turns, the last one has no tools");
-- the tool results before the final turn carry a note telling the model to answer now
-  with the evidence it has;
-- the final request sets `tool_choice: none`, which Anthropic enforces (Ollama accepts it
-  but ignores it, so the note does the real work there).
+- the system prompt states it ("at most 8 turns, on the last one only submit_report is
+  allowed");
+- the tool results before the final turn carry a note telling the model to submit its
+  report now with the evidence it has;
+- the final request sets `tool_choice` to force `submit_report`, which Anthropic enforces
+  (Ollama accepts it but ignores it, so the note does the real work there).
 
-A run that answers on the final turn is marked `budget_exhausted` in the trace: it
-succeeded, but the investigation was cut short, which is worth tracking in evals. Only
-if the model still calls tools on the final turn does the run fail.
+A run that submits on the final turn is marked `budget_exhausted` in the trace: it
+succeeded, but the investigation was cut short, which is worth tracking in evals. The
+run fails only if the final turn produces anything other than a valid report.
+
+**The answer is a tool call, not free text.** The model answers by calling
+`submit_report`, whose input schema is the report (`summary`, `root_cause_service`,
+`triggering_change`, `affected_services`, `evidence`, `confidence`, ...). Describing the
+output as a tool's input is the standard way to get structured output from a
+tool-calling model, and it's what makes evals possible without either brittle phrase
+matching or a second model grading prose: `root_cause_service == "payments"` survives a
+change of model or wording. `submit_report` lives in `internal/agent`, not the tool
+registry, because it isn't a view of the system but part of the loop's protocol:
+
+- a valid report ends the run (tools asked for in the same response are skipped);
+- an invalid report (e.g. `confidence: "very"`) goes back as an `is_error` tool_result,
+  like any failing tool, and the model resubmits. The schema says the same thing, but
+  servers such as Ollama don't enforce schemas, so the loop checks;
+- a plain-text reply is not accepted as an answer: the loop replies with a reminder to
+  use `submit_report`, which costs a turn. Models trained to "just answer" do this.
+
+The field descriptions are prompt text, so they're written not to hint at the answer:
+`triggering_change` and `root_cause_service` may be empty, so "no deploy did it" and "no
+incident" stay expressible.
 
 **`query_metrics` downsamples instead of deduplicating.** Every metric point is unique,
 so grouping doesn't apply, but the model rarely needs 181 one-minute points to see
@@ -194,7 +221,7 @@ algorithm). That's a natural follow-up when the data layer moves to real ClickHo
 
 **The system prompt encodes a playbook, not just a persona** — it tells the agent the order
 of investigation (services -> metrics -> deploys -> logs -> cross-service correlation) and
-the exact output schema. That playbook living in one string in `agent.go` is the thing stage
+when to submit the report. That playbook living in one string in `agent.go` is the thing stage
 2 (skills) below factors out into reusable, composable files.
 
 **Retries with backoff on 429/5xx** (`internal/claude/client.go`), not on 4xx — the agent
@@ -209,8 +236,8 @@ deciding whether and how to call the tool.
 
 ## Watching the loop
 
-While it runs, the agent narrates every step of the loop on stderr (the final answer stays
-on stdout), from `internal/agent/steplog.go`:
+While it runs, the agent narrates every step of the loop on stderr (the final report goes
+to stdout), from `internal/agent/steplog.go`:
 
 ```
 ──── turn 2/8 ────
@@ -235,11 +262,15 @@ Each run writes `traces/run-<UTC timestamp>.jsonl`. Example lines:
 {"ts":"...","elapsed_ms":0,"event":"run_start","question":"...","model":"claude-sonnet-5-5"}
 {"ts":"...","elapsed_ms":1420,"event":"llm_response","turn":1,"latency_ms":1420,"stop_reason":"tool_use","input_tokens":612,"cache_read_input_tokens":0,"output_tokens":98}
 {"ts":"...","elapsed_ms":1421,"event":"tool_call","turn":1,"tool":"list_services","input":"{}","latency_ms":0,"is_error":false,"result_len":540}
-{"ts":"...","elapsed_ms":9800,"event":"run_end","turns":4,"total_input_tokens":3100,"total_cache_read_input_tokens":0,"total_output_tokens":410,"budget_exhausted":false}
+{"ts":"...","elapsed_ms":9790,"event":"tool_call","turn":4,"tool":"submit_report","input":"{\"summary\":...}","latency_ms":0,"is_error":false}
+{"ts":"...","elapsed_ms":9800,"event":"run_end","turns":4,"total_input_tokens":3100,"total_cache_read_input_tokens":0,"total_output_tokens":410,"budget_exhausted":false,"report":{"summary":"...","root_cause_service":"...",...}}
 ```
 
-Every run ends with exactly one `run_end` line, however it ends. A failed run (model API
-error, turn cap) gets the same line plus an `error` field, and a failed model call also
+`submit_report` calls are traced as `tool_call` events like any other tool; a rejected
+report has `is_error: true` and an `error` field saying what was wrong. Every run ends with
+exactly one `run_end` line, however it ends. A successful run's `run_end` carries the
+submitted `report`. A failed run (model API error, turn cap, no valid report on the final
+turn) gets the same line with an `error` field instead, and a failed model call also
 logs an `llm_error` event for its turn:
 
 ```json

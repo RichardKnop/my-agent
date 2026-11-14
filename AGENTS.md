@@ -23,11 +23,12 @@ engineering, tracing, cost. The point is understanding, so clarity beats feature
 - **Comments explain why and which agent concept the code shows**, not what the code
   does. Follow the existing style: each package doc comment ties the package to a
   concept and, where relevant, a roadmap stage.
-- **Prompts and tool descriptions are behavior.** The system prompt (`internal/agent`)
-  and tool `Description` strings (`internal/tools`) are read by the model. Treat
+- **Prompts and tool descriptions are behavior.** The system prompt (`internal/agent`),
+  tool `Description` strings (`internal/tools`) and the `submit_report` schema
+  (`internal/agent/report.go`) are read by the model. Treat
   changes to them as behavior changes and mention them in your summary.
 - **Don't leak the answer.** Never put the incident's root cause (the payments deploy,
-  the pool timeout) into the system prompt, tool descriptions or skills. The agent has
+  the pool timeout) into the system prompt, tool descriptions, the report schema or skills. The agent has
   to find it from the data, or the future evals stage measures nothing.
 - **Keep README in sync** when flags, tool behavior, trace fields or step-log output
   change.
@@ -36,7 +37,8 @@ engineering, tracing, cost. The point is understanding, so clarity beats feature
 
 ```
 cmd/agent/          CLI entrypoint; wires client, tools, store, tracer, runs one question
-internal/agent/     the agentic loop + system prompt (agent.go), stderr narration (steplog.go)
+internal/agent/     the agentic loop + system prompt (agent.go), the submit_report tool and
+                    Report type (report.go), stderr narration (steplog.go)
 internal/claude/    raw-HTTP Anthropic Messages API client (also works with Ollama)
 internal/tools/     tool JSON-schema definitions + handlers, Registry for name lookup
 internal/data/      loads data/*.json into an in-memory Store
