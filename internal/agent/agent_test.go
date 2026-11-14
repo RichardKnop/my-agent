@@ -410,3 +410,21 @@ func TestInvestigate_FinalTurnForcesAnAnswer(t *testing.T) {
 	assert.Equal(t, "text", turn2Results[1].Type)
 	assert.Equal(t, finalTurnNote, turn2Results[1].Text)
 }
+
+// A response cut off by max_tokens is half an answer. The loop fails the
+// run rather than return it as if it were the finished report.
+func TestInvestigate_CutOffResponseFailsTheRun(t *testing.T) {
+	t.Parallel()
+
+	llm := &fakeLLM{replies: []fakeReply{
+		reply("max_tokens", textBlock("Root cause: a deploy of pay")),
+	}}
+	a := newTestAgent(t, llm, 8)
+
+	answer, err := a.Investigate(context.Background(), "why?")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "turn 1: response cut off at max_tokens (4096)")
+	assert.Empty(t, answer)
+	assert.Len(t, llm.requests, 1, "no further turns after a cut-off response")
+}

@@ -48,16 +48,17 @@ skills/             stage 2 placeholder
 ## Commands
 
 ```
-python3 scripts/gen_data.py                    # regenerate data/*.json (incident = yesterday, UTC)
-python3 scripts/gen_data.py --date 2026-08-23  # pinned, reproducible dataset
+python3 scripts/gen_data.py                    # reproduces the committed, pinned data/*.json
 gofmt -l . && go vet ./... && go test -race ./...   # same checks as CI
-go run ./cmd/agent -v 2 "why did checkout error rate spike yesterday afternoon?"
+go run ./cmd/agent -now 2026-08-24T09:00:00Z -v 2 "why did checkout error rate spike yesterday afternoon?"
 ```
 
 - Tool tests run against the real `data/*.json` and work out the incident day from
   the `payments v2.14.0` deploy. Never hardcode dates in those tests.
-- `data/*.json` is committed. Regenerating it changes every timestamp, so don't commit
-  regenerated data unless that's the intent.
+- `data/*.json` is committed and **pinned**: the incident is on 2026-08-23, and the
+  generator is seeded, so running it without arguments reproduces the files exactly.
+  Always run the agent with `-now 2026-08-24T09:00:00Z`; without it, "yesterday" is a
+  day with no data. Never commit data generated with `--date`.
 - Running the agent calls a real model: against Anthropic it needs `ANTHROPIC_API_KEY`
   and costs money, so don't run it unless asked. A local Ollama model works via
   `-base-url http://localhost:11434 -model qwen3-coder` (see README).
@@ -93,7 +94,7 @@ go run ./cmd/agent -v 2 "why did checkout error rate spike yesterday afternoon?"
 
 ## The mock incident (for writing tests, not prompts)
 
-A `payments` deploy (`v2.14.0`, ~14:31 UTC on the incident day) drops the DB pool
+A `payments` deploy (`v2.14.0`, 14:31 UTC on 2026-08-23) drops the DB pool
 timeout from 5000ms to 500ms. Payments times out acquiring connections, `checkout`
 (a synchronous caller) errors and retries, and `frontend` returns 503s. A rollback
 (`v2.14.1`) fixes it. `inventory` / `inventory-db` stay healthy as a control group.

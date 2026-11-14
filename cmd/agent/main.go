@@ -1,14 +1,15 @@
 // Command agent is the CLI entrypoint: point it at a question and it runs
 // the incident-investigation agent loop against the mock dataset in data/.
 //
-// Usage:
+// The committed dataset is pinned to an incident on 2026-08-23, so pass -now
+// to make "yesterday" mean that day:
 //
 //	export ANTHROPIC_API_KEY=sk-ant-...
-//	go run ./cmd/agent "why did checkout error rate spike yesterday afternoon?"
+//	go run ./cmd/agent -now 2026-08-24T09:00:00Z "why did checkout error rate spike yesterday afternoon?"
 //
 // Or against a local model served by Ollama (no API key, no cost):
 //
-//	go run ./cmd/agent -base-url http://localhost:11434 -model qwen3-coder "..."
+//	go run ./cmd/agent -base-url http://localhost:11434 -model qwen3-coder -now 2026-08-24T09:00:00Z "..."
 package main
 
 import (
@@ -32,11 +33,12 @@ func main() {
 	dataDir := flag.String("data-dir", "data", "directory containing services.json, deploys.json, metrics.json, logs.json")
 	traceDir := flag.String("trace-dir", "traces", "directory to write the per-run JSONL trace file into")
 	model := flag.String("model", agent.DefaultConfig().Model, "model id (a Claude model, or a local model name such as qwen3-coder when using -base-url)")
-	maxTurns := flag.Int("max-turns", agent.DefaultConfig().MaxTurns, "max agent loop turns before giving up")
+	maxTurns := flag.Int("max-turns", agent.DefaultConfig().MaxTurns, "turn budget: the model must answer by the last turn")
+	maxTokens := flag.Int("max-tokens", agent.DefaultConfig().MaxTokens, "max tokens per model response; a response cut off at this limit fails the run")
 	baseURL := flag.String("base-url", os.Getenv("ANTHROPIC_BASE_URL"), "Messages API base URL; empty = Anthropic, e.g. http://localhost:11434 for Ollama (defaults to $ANTHROPIC_BASE_URL)")
 	timeout := flag.Duration("timeout", 3*time.Minute, "overall time limit for one investigation (local models may need more, e.g. 10m)")
 	verbosity := flag.Int("v", 1, "step log on stderr: 0 = silent, 1 = each loop step, 2 = each step plus full payloads (system prompt, tool definitions, tool results)")
-	nowFlag := flag.String("now", "", "RFC3339 time the agent treats as \"now\" (default: real current time); use to replay an older dataset, e.g. 2026-08-24T09:00:00Z")
+	nowFlag := flag.String("now", "", "RFC3339 time the agent treats as \"now\" (default: real current time); use 2026-08-24T09:00:00Z with the committed dataset (incident on 2026-08-23)")
 	flag.Parse()
 
 	var now time.Time
@@ -83,6 +85,7 @@ func main() {
 	cfg := agent.DefaultConfig()
 	cfg.Model = *model
 	cfg.MaxTurns = *maxTurns
+	cfg.MaxTokens = *maxTokens
 	cfg.Now = now
 	cfg.Verbosity = *verbosity
 	cfg.LogWriter = os.Stderr

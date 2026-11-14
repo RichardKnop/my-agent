@@ -100,8 +100,11 @@ type LLM interface {
 
 func DefaultConfig() Config {
 	return Config{
-		Model:     "claude-sonnet-4-5-20250929",
-		MaxTokens: 1024,
+		Model: "claude-sonnet-5-5",
+		// Caps the length of each model response. The final report is
+		// the longest one; a cap that cuts it off is now an error rather
+		// than a truncated "answer", so leave generous headroom.
+		MaxTokens: 4096,
 		MaxTurns:  8,
 	}
 }
@@ -213,6 +216,14 @@ func (a *Agent) run(ctx context.Context, question string, stats *runStats) (stri
 			"output_tokens":           resp.Usage.OutputTokens,
 			"request_bytes":           len(payload),
 		})
+
+		if resp.StopReason == "max_tokens" {
+			// The response was cut off mid-sentence (or mid tool call).
+			// Returning it as the answer would pass half a report off as
+			// a finished one, so fail loudly instead.
+			return "", fmt.Errorf("turn %d: response cut off at max_tokens (%d): raise -max-tokens",
+				turn, a.cfg.MaxTokens)
+		}
 
 		messages = append(messages, claude.Message{Role: "assistant", Content: resp.Content})
 
