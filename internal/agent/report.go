@@ -69,13 +69,15 @@ var submitReportTool = claude.Tool{
 			"affected_services": map[string]any{
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
-				"description": "Services that showed impact, including the root-cause service.",
+				"description": "Services that showed impact, including the root-cause service. " +
+					"A JSON array with one service name per element.",
 			},
 			"evidence": map[string]any{
 				"type":  "array",
 				"items": map[string]any{"type": "string"},
 				"description": "Specific data points supporting the conclusion: timestamps, " +
-					"services, metric values, deploy versions or log messages.",
+					"services, metric values, deploy versions or log messages. A JSON array with " +
+					"one string per data point, not a single bulleted string.",
 			},
 			"confidence": map[string]any{
 				"type": "string",
