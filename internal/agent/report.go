@@ -67,8 +67,8 @@ var submitReportTool = claude.Tool{
 					"or you could not identify one.",
 			},
 			"affected_services": map[string]any{
-				"type":        "array",
-				"items":       map[string]any{"type": "string"},
+				"type":  "array",
+				"items": map[string]any{"type": "string"},
 				"description": "Services that showed impact, including the root-cause service. " +
 					"A JSON array with one service name per element.",
 			},
