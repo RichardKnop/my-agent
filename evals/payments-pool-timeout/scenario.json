@@ -12,7 +12,7 @@
   ],
   "expect": {
     "root_cause_service": "payments",
-    "triggering_change": "v2.14.0",
+    "triggering_change": {"service": "payments", "version": "v2.14.0"},
     "affected_services": ["payments", "checkout", "frontend"],
     "unaffected_services": ["payments-db", "inventory", "inventory-db"]
   }

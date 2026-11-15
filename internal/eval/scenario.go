@@ -53,12 +53,9 @@ type Expect struct {
 	// RootCauseService must equal the report's root_cause_service (ignoring
 	// case). Empty means the scenario has no incident.
 	RootCauseService string `json:"root_cause_service"`
-	// TriggeringChange must appear somewhere in the report's
-	// triggering_change (ignoring case), because models phrase it freely:
-	// "v2.14.0", "payments v2.14.0", "v2.14.0 deploy to payments". Empty
-	// means no change triggered the incident, so the report must leave it
-	// empty too.
-	TriggeringChange string `json:"triggering_change"`
+	// TriggeringChange is the change that triggered the incident. Nil
+	// means none did, so the report must leave triggering_change empty.
+	TriggeringChange *Change `json:"triggering_change"`
 	// AffectedServices are the services that showed impact. A report is
 	// scored on how many of them it names, not pass/fail: missing a
 	// downstream service is a weaker answer, not a wrong one.
@@ -66,6 +63,15 @@ type Expect struct {
 	// UnaffectedServices are healthy controls. Naming one as affected is
 	// recorded as a localization mistake.
 	UnaffectedServices []string `json:"unaffected_services"`
+}
+
+// Change identifies a change by the service it was made to and its version.
+// Both are graded: a version alone could belong to another service, and the
+// service that changed isn't always the one that failed (a checkout deploy
+// can break payments).
+type Change struct {
+	Service string `json:"service"`
+	Version string `json:"version"`
 }
 
 // LoadScenarios loads every scenario directory under root whose name
@@ -113,6 +119,9 @@ func LoadScenario(dir string) (Scenario, error) {
 	}
 	if len(sc.Questions) == 0 {
 		return sc, fmt.Errorf("scenario %s: no questions", sc.Name)
+	}
+	if c := sc.Expect.TriggeringChange; c != nil && (c.Service == "" || c.Version == "") {
+		return sc, fmt.Errorf("scenario %s: triggering_change needs both service and version (omit it if no change triggered the incident)", sc.Name)
 	}
 	if _, err := sc.NowTime(); err != nil {
 		return sc, fmt.Errorf("scenario %s: %w", sc.Name, err)

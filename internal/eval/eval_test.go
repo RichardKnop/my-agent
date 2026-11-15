@@ -18,7 +18,7 @@ import (
 
 var payments = Expect{
 	RootCauseService:   "payments",
-	TriggeringChange:   "v2.14.0",
+	TriggeringChange:   &Change{Service: "payments", Version: "v2.14.0"},
 	AffectedServices:   []string{"payments", "checkout", "frontend"},
 	UnaffectedServices: []string{"inventory", "inventory-db"},
 }
@@ -52,6 +52,37 @@ func TestGradeReport(t *testing.T) {
 			expect: payments,
 			report: &agent.Report{RootCauseService: "payments-db", TriggeringChange: "payments v2.14.0"},
 			want:   Grade{TriggeringChange: true},
+		},
+		{
+			name:   "bare version: root_cause_service says which service",
+			expect: payments,
+			report: &agent.Report{RootCauseService: "payments", TriggeringChange: "v2.14.0"},
+			want:   Grade{RootCauseService: true, TriggeringChange: true, Pass: true},
+		},
+		{
+			name:   "bare version with the wrong root-cause service",
+			expect: payments,
+			report: &agent.Report{RootCauseService: "checkout", TriggeringChange: "v2.14.0"},
+			want:   Grade{},
+		},
+		{
+			name:   "right version attributed to another service",
+			expect: payments,
+			report: &agent.Report{RootCauseService: "payments", TriggeringChange: "checkout v2.14.0"},
+			want:   Grade{RootCauseService: true},
+		},
+		{
+			name:   "payments-db is not payments",
+			expect: payments,
+			report: &agent.Report{RootCauseService: "payments", TriggeringChange: "payments-db v2.14.0 migration"},
+			want:   Grade{RootCauseService: true},
+		},
+		{
+			name:   "singular service name, other services mentioned too",
+			expect: payments,
+			report: &agent.Report{RootCauseService: "payments",
+				TriggeringChange: "the v2.14.0 deploy to the Payment service, which broke checkout"},
+			want: Grade{RootCauseService: true, TriggeringChange: true, Pass: true},
 		},
 		{
 			name:   "right service, no change named",
@@ -95,13 +126,15 @@ func TestGradeReport(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := GradeReport(tc.expect, tc.report)
+			got := GradeReport(tc.expect, testServices, tc.report)
 			assert.InDelta(t, tc.want.AffectedRecall, got.AffectedRecall, 1e-9)
 			got.AffectedRecall = tc.want.AffectedRecall
 			assert.Equal(t, tc.want, got)
 		})
 	}
 }
+
+var testServices = []string{"frontend", "checkout", "payments", "payments-db", "inventory", "inventory-db"}
 
 // writeScenario creates a scenario directory with an empty data directory.
 func writeScenario(t *testing.T, root, name, scenarioJSON string) string {
@@ -127,6 +160,11 @@ func TestLoadScenario(t *testing.T) {
 			name:    "misspelled expectation",
 			json:    `{"now": "2026-08-24T09:00:00Z", "questions": ["why?"], "expect": {"root_cause": "payments"}}`,
 			wantErr: `unknown field "root_cause"`,
+		},
+		{
+			name:    "triggering change without a version",
+			json:    `{"now": "2026-08-24T09:00:00Z", "questions": ["why?"], "expect": {"triggering_change": {"service": "payments"}}}`,
+			wantErr: "triggering_change needs both service and version",
 		},
 		{
 			name:    "no questions",
