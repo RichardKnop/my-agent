@@ -114,11 +114,12 @@ type Request struct {
 }
 
 // ToolChoice constrains tool use for one request. Type is "auto", "any",
-// "tool" or "none"; this project only uses "none", to force a final answer.
-// Not every Messages-API-compatible server honours it (Ollama accepts and
-// ignores it).
+// "tool" (call the tool called Name) or "none"; this project only uses "tool",
+// to force the final report. Not every Messages-API-compatible server honours
+// it (Ollama accepts and ignores it).
 type ToolChoice struct {
 	Type string `json:"type"`
+	Name string `json:"name,omitempty"`
 }
 
 type Usage struct {

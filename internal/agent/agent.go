@@ -1,7 +1,8 @@
 // Package agent implements the core agentic loop: send the conversation to
 // Claude, execute whatever tools it asks for, feed the results back, repeat
-// until Claude stops asking for tools (or we hit a turn cap). Everything
-// else in this project (tools, data, tracing) exists to support this loop.
+// until Claude submits its report through the submit_report tool (or we hit
+// a turn cap). Everything else in this project (tools, data, tracing) exists
+// to support this loop.
 package agent
 
 import (
@@ -9,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/richardknop/my-agent/internal/claude"
@@ -33,14 +33,10 @@ A good investigation typically:
    whether that explains anomalies in the services that call it (e.g. checkout, frontend),
    rather than treating each anomaly as independent.
 
-Once you have enough evidence, STOP calling tools and answer in plain text with exactly these
-sections:
-
-Root cause: <one or two sentences>
-Evidence: <bullet-style list of the specific data points that support it — cite timestamps,
-  services, metric values, deploy versions, or log messages>
-Confidence: <low|medium|high, with a short reason>
-Recommended action: <what you'd do next, e.g. rollback, alert threshold, follow-up query>
+Once you have enough evidence, STOP investigating and answer by calling submit_report. That
+call is the only way to answer: plain-text answers are not recorded. In the report, cite the
+specific data points that support your conclusion (timestamps, services, metric values, deploy
+versions, log messages).
 
 Be concise. Do not call a tool again once you have already gathered enough evidence to answer.`
 
@@ -62,19 +58,25 @@ times in the question ("yesterday afternoon", "an hour ago") against this curren
 time and pass explicit RFC3339 timestamps to the tools.
 
 Turn budget: you have at most %d turns (a turn is one response from you). On the last
-turn tools are disabled and you must answer, so plan to finish the investigation
-within %d rounds of tool calls. Prefer answering with the evidence you have over
+turn only submit_report is allowed, so plan to finish the investigation within %d
+rounds of tool calls. Prefer answering with the evidence you have over
 one more confirmation.`,
 		now.Format(time.RFC3339), now.Weekday(), maxTurns, max(maxTurns-1, 0))
 }
 
 // finalTurnNote is appended to the last tool results before the final turn.
-// It's the part that works with every server: Anthropic also honours
-// tool_choice "none", but Ollama accepts and ignores it.
-const finalTurnNote = "[agent harness] Turn budget exhausted: this is your final turn and tools " +
-	"are now disabled. Do not call any tools. Answer now in the required format, using only " +
-	"the evidence gathered so far; if it is incomplete, say what is missing and lower your " +
-	"confidence accordingly."
+// It's the part that works with every server: Anthropic also honours a
+// tool_choice that forces submit_report, but Ollama accepts and ignores it.
+const finalTurnNote = "[agent harness] Turn budget exhausted: this is your final turn. Do not " +
+	"call any investigation tools. Call submit_report now, using only the evidence gathered so " +
+	"far; if it is incomplete, say what is missing and lower your confidence accordingly."
+
+// submitReminder answers a plain-text reply. Models trained to "just answer"
+// often do that even when told to use a tool; the harness enforces the
+// output contract by asking again rather than accepting the text.
+const submitReminder = "[agent harness] Your reply was not recorded as an answer: answers are only " +
+	"accepted through the submit_report tool. If you have finished investigating, call " +
+	"submit_report now; otherwise continue the investigation."
 
 type Config struct {
 	Model     string
@@ -134,24 +136,24 @@ type runStats struct {
 	inputTokens     int
 	cacheReadTokens int
 	outputTokens    int
-	// budgetExhausted: the answer came on the final turn, after the model
-	// was told to stop calling tools. Worth tracking (and, in evals,
+	// budgetExhausted: the report came on the final turn, after the model
+	// was told to stop investigating. Worth tracking (and, in evals,
 	// alerting on): it means the investigation was cut short.
 	budgetExhausted bool
 }
 
-// Investigate runs the agent loop for one question and returns Claude's
-// final text answer. Every run, however it ends (answer, model API error,
+// Investigate runs the agent loop for one question and returns the report
+// the model submitted. Every run, however it ends (report, model API error,
 // turn cap), goes through finish exactly once, so the trace always ends with
 // a run_end event and the step log always prints a summary.
-func (a *Agent) Investigate(ctx context.Context, question string) (string, error) {
+func (a *Agent) Investigate(ctx context.Context, question string) (*Report, error) {
 	var stats runStats
-	answer, err := a.run(ctx, question, &stats)
-	a.finish(stats, err)
-	return answer, err
+	report, err := a.run(ctx, question, &stats)
+	a.finish(stats, report, err)
+	return report, err
 }
 
-func (a *Agent) run(ctx context.Context, question string, stats *runStats) (string, error) {
+func (a *Agent) run(ctx context.Context, question string, stats *runStats) (*Report, error) {
 	messages := []claude.Message{
 		{Role: "user", Content: []claude.ContentBlock{{Type: "text", Text: question}}},
 	}
@@ -163,7 +165,7 @@ func (a *Agent) run(ctx context.Context, question string, stats *runStats) (stri
 		now = time.Now()
 	}
 	system := buildSystemPrompt(now, a.cfg.MaxTurns)
-	apiTools := toAPITools(a.registry.Definitions())
+	apiTools := append(toAPITools(a.registry.Definitions()), submitReportTool)
 	a.log.runStart(question, a.cfg.Model, now, system, apiTools)
 
 	for turn := 1; turn <= a.cfg.MaxTurns; turn++ {
@@ -177,17 +179,17 @@ func (a *Agent) run(ctx context.Context, question string, stats *runStats) (stri
 			Tools:     apiTools,
 		}
 		if final {
-			// The tools must still be sent: the conversation contains
+			// All tools must still be sent: the conversation contains
 			// tool_use/tool_result blocks, which the API rejects without
-			// tool definitions. "none" forbids calling them.
-			req.ToolChoice = &claude.ToolChoice{Type: "none"}
+			// their definitions. This tool_choice forces submit_report.
+			req.ToolChoice = &claude.ToolChoice{Type: "tool", Name: submitReportToolName}
 		}
 
 		// Size of what we're about to send — useful for watching the context
 		// window grow turn by turn.
 		payload, err := json.Marshal(req)
 		if err != nil {
-			return "", fmt.Errorf("turn %d: marshal request: %w", turn, err)
+			return nil, fmt.Errorf("turn %d: marshal request: %w", turn, err)
 		}
 		a.log.request(turn, a.cfg.MaxTurns, len(messages), len(payload))
 
@@ -200,7 +202,7 @@ func (a *Agent) run(ctx context.Context, question string, stats *runStats) (stri
 				"latency_ms": latency.Milliseconds(),
 				"error":      err.Error(),
 			})
-			return "", fmt.Errorf("turn %d: %w", turn, err)
+			return nil, fmt.Errorf("turn %d: %w", turn, err)
 		}
 		a.log.response(resp, latency, len(payload))
 
@@ -221,46 +223,113 @@ func (a *Agent) run(ctx context.Context, question string, stats *runStats) (stri
 			// The response was cut off mid-sentence (or mid tool call).
 			// Returning it as the answer would pass half a report off as
 			// a finished one, so fail loudly instead.
-			return "", fmt.Errorf("turn %d: response cut off at max_tokens (%d): raise -max-tokens",
+			return nil, fmt.Errorf("turn %d: response cut off at max_tokens (%d): raise -max-tokens",
 				turn, a.cfg.MaxTokens)
 		}
 
 		messages = append(messages, claude.Message{Role: "assistant", Content: resp.Content})
 
-		if resp.StopReason != "tool_use" {
-			stats.budgetExhausted = final && a.cfg.MaxTurns > 1
-			return textOf(resp.Content), nil
-		}
-		if final {
-			// The model ignored the instruction to answer. Running the tools
-			// would only produce results nobody reads.
-			return "", fmt.Errorf("exceeded max turns (%d) without a final answer: "+
-				"the model kept calling tools on the final turn", a.cfg.MaxTurns)
-		}
-
-		var resultBlocks []claude.ContentBlock
+		var toolUses, submits []claude.ContentBlock
 		for _, block := range resp.Content {
 			if block.Type != "tool_use" {
 				continue
 			}
-			resultBlocks = append(resultBlocks, a.callTool(ctx, turn, block))
+			toolUses = append(toolUses, block)
+			if block.Name == submitReportToolName {
+				submits = append(submits, block)
+			}
 		}
 
-		if len(resultBlocks) > 0 {
-			if turn+1 == a.cfg.MaxTurns {
-				// Text blocks may follow tool_result blocks in the same
-				// user message, so the note rides along with the results.
-				resultBlocks = append(resultBlocks, claude.ContentBlock{Type: "text", Text: finalTurnNote})
-				a.log.finalTurnNote()
+		// Exactly one valid report ends the run, even if the model asked for
+		// other tools in the same response: their results would go unread.
+		// Anything else is a mistake the model can fix: reportErr answers
+		// every submit_report block in this response with a tool error.
+		var reportErr error
+		switch len(submits) {
+		case 0:
+		case 1:
+			report, err := a.checkReport(turn, submits[0])
+			if err == nil {
+				stats.budgetExhausted = final && a.cfg.MaxTurns > 1
+				return report, nil
 			}
-			messages = append(messages, claude.Message{Role: "user", Content: resultBlocks})
-			a.log.resultsAppended(len(resultBlocks))
+			reportErr = err
+		default:
+			// Picking one (the first? the first valid one?) would be a
+			// guess at what the model meant, so none is accepted.
+			reportErr = fmt.Errorf("invalid report: submit_report was called %d times in one response; "+
+				"call it exactly once. None of these reports was recorded", len(submits))
+			for _, block := range submits {
+				a.traceReport(turn, block, reportErr)
+			}
+			a.log.reportChecked(reportErr)
 		}
+
+		if final {
+			// The model ignored the instruction to submit. Running tools or
+			// asking again would only cost turns the budget doesn't have.
+			if reportErr != nil {
+				return nil, fmt.Errorf("turn %d: the model submitted an invalid report on the final turn: %w", turn, reportErr)
+			}
+			if len(toolUses) > 0 {
+				return nil, fmt.Errorf("exceeded max turns (%d) without a report: "+
+					"the model kept calling tools on the final turn", a.cfg.MaxTurns)
+			}
+			return nil, fmt.Errorf("exceeded max turns (%d) without a report: "+
+				"the model answered in plain text instead of calling %s", a.cfg.MaxTurns, submitReportToolName)
+		}
+
+		var next []claude.ContentBlock
+		for _, block := range toolUses {
+			if block.Name == submitReportToolName {
+				next = append(next, claude.ContentBlock{
+					Type: "tool_result", ToolUseID: block.ID, Content: reportErr.Error(), IsError: true,
+				})
+				continue
+			}
+			next = append(next, a.callTool(ctx, turn, block))
+		}
+		if len(toolUses) == 0 {
+			next = append(next, claude.ContentBlock{Type: "text", Text: submitReminder})
+			a.log.submitReminder()
+		}
+		if turn+1 == a.cfg.MaxTurns {
+			// Text blocks may follow tool_result blocks in the same user
+			// message, so the note rides along with the results.
+			next = append(next, claude.ContentBlock{Type: "text", Text: finalTurnNote})
+			a.log.finalTurnNote()
+		}
+		messages = append(messages, claude.Message{Role: "user", Content: next})
+		a.log.resultsAppended(len(toolUses))
 	}
 
 	// Unreachable while the final turn always returns, but keeps the
 	// compiler (and a future edit to the loop) honest.
-	return "", fmt.Errorf("exceeded max turns (%d) without a final answer", a.cfg.MaxTurns)
+	return nil, fmt.Errorf("exceeded max turns (%d) without a report", a.cfg.MaxTurns)
+}
+
+// checkReport validates a submit_report call.
+func (a *Agent) checkReport(turn int, block claude.ContentBlock) (*Report, error) {
+	report, err := parseReport(block.Input)
+	a.traceReport(turn, block, err)
+	a.log.reportChecked(err)
+	return report, err
+}
+
+// traceReport records a submit_report call like any other tool call, so the
+// trace shows rejected reports and what was wrong with them.
+func (a *Agent) traceReport(turn int, block claude.ContentBlock, err error) {
+	fields := map[string]any{
+		"turn":       turn,
+		"tool":       block.Name,
+		"input":      string(block.Input),
+		"latency_ms": 0,
+		"is_error":   err != nil,
+	}
+	if err != nil {
+		fields["error"] = err.Error()
+	}
+	a.tracer.Event("tool_call", fields)
 }
 
 // callTool runs one tool_use block and turns the outcome into the matching
@@ -295,13 +364,16 @@ func (a *Agent) callTool(ctx context.Context, turn int, block claude.ContentBloc
 }
 
 // finish writes the end-of-run record to the trace and the step log.
-func (a *Agent) finish(stats runStats, err error) {
+func (a *Agent) finish(stats runStats, report *Report, err error) {
 	fields := map[string]any{
 		"turns":                         stats.turns,
 		"total_input_tokens":            stats.inputTokens,
 		"total_cache_read_input_tokens": stats.cacheReadTokens,
 		"total_output_tokens":           stats.outputTokens,
 		"budget_exhausted":              stats.budgetExhausted,
+	}
+	if report != nil {
+		fields["report"] = report
 	}
 	if err != nil {
 		fields["error"] = err.Error()
@@ -321,14 +393,4 @@ func toAPITools(defs []tools.Definition) []claude.Tool {
 		out[i] = claude.Tool{Name: d.Name, Description: d.Description, InputSchema: d.InputSchema}
 	}
 	return out
-}
-
-func textOf(blocks []claude.ContentBlock) string {
-	var sb strings.Builder
-	for _, b := range blocks {
-		if b.Type == "text" {
-			sb.WriteString(b.Text)
-		}
-	}
-	return sb.String()
 }

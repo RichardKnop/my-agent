@@ -80,7 +80,7 @@ func (l *stepLog) response(resp *claude.Response, latency time.Duration, payload
 	for _, b := range resp.Content {
 		switch b.Type {
 		case "text":
-			if t := strings.TrimSpace(b.Text); t != "" && resp.StopReason == "tool_use" {
+			if t := strings.TrimSpace(b.Text); t != "" {
 				l.printf("  model says  : %s\n", oneLine(t, 400))
 			}
 		case "tool_use":
@@ -92,11 +92,11 @@ func (l *stepLog) response(resp *claude.Response, latency time.Duration, payload
 	case "tool_use":
 		// the caller logs the tool executions next
 	case "end_turn":
-		l.printf("  → no tool calls: the model is done, its text is the final answer\n")
+		l.printf("  → no tool calls: a plain-text reply, not a report (answers go through submit_report)\n")
 	case "max_tokens":
 		l.printf("  ! stop_reason=max_tokens: the response was cut off by the MaxTokens limit; failing the run\n")
 	default:
-		l.printf("  → stop_reason %q treated as final\n", resp.StopReason)
+		l.printf("  → stop_reason %q\n", resp.StopReason)
 	}
 }
 
@@ -122,11 +122,30 @@ func (l *stepLog) resultsAppended(n int) {
 	l.printf("→ appended %d tool_result block(s) as a new user message; looping back to the LLM\n", n)
 }
 
+func (l *stepLog) reportChecked(err error) {
+	if !l.on(1) {
+		return
+	}
+	if err != nil {
+		l.printf("✗ report rejected: %v\n", err)
+		l.printf("  (sent back as an is_error tool_result so the model can fix it and resubmit)\n")
+		return
+	}
+	l.printf("✓ report accepted: submit_report ends the run\n")
+}
+
+func (l *stepLog) submitReminder() {
+	if !l.on(1) {
+		return
+	}
+	l.printf("→ no report submitted: added a reminder that answers go through submit_report\n")
+}
+
 func (l *stepLog) finalTurnNote() {
 	if !l.on(1) {
 		return
 	}
-	l.printf("→ next turn is the last: added a note telling the model to answer without tools\n")
+	l.printf("→ next turn is the last: added a note telling the model to call submit_report now\n")
 }
 
 func (l *stepLog) runEnd(stats runStats, err error) {
@@ -138,9 +157,9 @@ func (l *stepLog) runEnd(stats runStats, err error) {
 	case err != nil:
 		l.printf("result   : FAILED: %v\n", err)
 	case stats.budgetExhausted:
-		l.printf("result   : final answer after %d turn(s), forced by the turn budget (investigation was cut short)\n", stats.turns)
+		l.printf("result   : report submitted after %d turn(s), forced by the turn budget (investigation was cut short)\n", stats.turns)
 	default:
-		l.printf("result   : final answer after %d turn(s)\n", stats.turns)
+		l.printf("result   : report submitted after %d turn(s)\n", stats.turns)
 	}
 	l.printf("tokens   : in=%d cache_read=%d out=%d (prompt tokens add up across turns because each turn\n"+
 		"           re-sends the history; servers that cache the shared prefix count it as cache_read)\n\n",
