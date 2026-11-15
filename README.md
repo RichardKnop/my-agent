@@ -316,24 +316,41 @@ Every question is a full, independent agent run (asked `-repeat` times), and eac
   doubles the turns is still a regression, and reading the trace (rather than the agent's
   internal counters) means evals depend only on the record a production pipeline would see.
 
-Output is one line per run while it goes, then a summary table per scenario. The first
-run against qwen3-coder:
+Output is one line per run while it goes, then a summary table per scenario.
+
+**The first prompt change measured by the evals.** In the first runs (qwen3-coder), the
+leading question "Did the inventory service cause the checkout errors yesterday?" failed:
+the agent investigated only inventory, found no errors and no deploy there, and still
+answered "inventory" with high confidence, without ever looking at payments. That's
+confirmation bias, and it only shows up because one phrasing points at the wrong
+service. Three steps, each with its results committed in `evals/results/` (`-repeat 3`,
+18 runs):
 
 ```
-[1/6] payments-pool-timeout q0 r1  PASS  service="payments" change="payments v2.14.0" affected=67%  turns=7 rejected=0 43s
-...
-[5/6] payments-pool-timeout q4 r1  FAIL  service="inventory" change="None identified; performance degradation occurred without an apparent deploy." affected=33%  turns=8 rejected=0 26s
-[6/6] payments-pool-timeout q5 r1  PASS  service="payments" change="payments service deploy v2.14.0" affected=100%  turns=8 rejected=0 35s
-
-               scenario  pass  root cause  change  affected  errors  budget out  rejected  tool errs  turns  tokens in/cached/out  time
-  payments-pool-timeout   5/6         5/6     5/6       78%       0           4         0          0    7.7        4.7K/30.7K/923   34s
+                                    pass  root cause  change  affected  budget out  turns  tokens in/cached/out  time
+1. first prompt (hinted)*            5/6         5/6     5/6       78%         4/6    7.7        3.9K/31.1K/933   32s
+2. hints removed                   16/18       16/18   16/18       81%       13/18    7.7        4.7K/31.3K/945   34s
+3. survey + hypothesis + schema    18/18       18/18   18/18       98%        0/18    5.3        8.0K/28.8K/1.3K   56s
+   * one repeat
 ```
 
-The failure is the leading question, "Did the inventory service cause the checkout
-errors yesterday?". The agent investigated only inventory, found no errors and no deploy
-there, and still answered "inventory" with high confidence, without ever looking at
-payments. That's confirmation bias, and it only shows up because one phrasing points at
-the wrong service.
+1. The playbook used the incident's own services as its examples ("if a downstream
+   service (e.g. payments) is impacted ... callers (e.g. checkout, frontend)"), and so
+   did a tool parameter. Removing them was the honest baseline: the leading question
+   still failed 2 of 3 times.
+2. The change that fixed it: the playbook now asks the agent to **survey every service
+   first**, querying error_rate for all of them in one turn of parallel tool calls, before
+   committing to an explanation; a cause suggested by the question is a hypothesis to test;
+   and the report schema says `affected_services` means every service that deviated from
+   its baseline and that high confidence needs direct evidence in the root-cause service.
+   The survey is the big lever: the agent sees payments spiking and inventory flat before it
+   chooses a path, frontend is affected on the evidence, and one parallel turn replaces
+   several sequential ones, so no run ran out of budget.
+
+The cost is visible too: each run takes longer (34s → 56s locally) and sends more new
+tokens (six metric results land in one turn), while using fewer turns. With only one
+scenario, a perfect score mostly says the prompt fits this incident; more scenarios are
+what show whether it generalizes.
 
 The full results (every report, grade and measurement, plus the model, settings and git
 commit) go to `evals/results/<timestamp>-<model>.json`, small enough to commit, so a
