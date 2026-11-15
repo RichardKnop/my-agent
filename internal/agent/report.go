@@ -71,7 +71,9 @@ var submitReportTool = claude.Tool{
 			"affected_services": map[string]any{
 				"type":  "array",
 				"items": map[string]any{"type": "string"},
-				"description": "Services that showed impact, including the root-cause service. " +
+				"description": "Every service whose metrics deviated from its own baseline during the " +
+					"incident, including the root-cause service and any callers that saw errors as a " +
+					"result, not only the services you investigated in depth. " +
 					"A JSON array with one service name per element.",
 			},
 			"evidence": map[string]any{
@@ -84,6 +86,9 @@ var submitReportTool = claude.Tool{
 			"confidence": map[string]any{
 				"type": "string",
 				"enum": []string{"low", "medium", "high"},
+				"description": "high only with direct evidence in the root-cause service itself " +
+					"(its own anomalous metrics or errors, and a change or mechanism that explains " +
+					"them); low if the conclusion rests on timing correlation alone.",
 			},
 			"confidence_reason": map[string]any{
 				"type":        "string",
