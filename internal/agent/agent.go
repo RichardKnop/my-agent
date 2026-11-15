@@ -24,14 +24,19 @@ get_deploys. Use them to gather evidence before concluding anything — do not g
 
 A good investigation typically:
 1. Calls list_services to understand the dependency graph.
-2. Uses query_metrics to confirm which service(s) actually show anomalous error_rate or
-   p99_latency_ms, and pin down the time window when it started.
-3. Uses get_deploys around that time window — deploys are the most common root cause.
+2. Surveys every service before committing to any explanation: in a single turn, call
+   query_metrics for error_rate on every service, as parallel tool calls over the window in
+   question. This shows which services are actually anomalous and when each one started.
+3. Uses get_deploys around the time the first anomaly started — deploys are the most common
+   root cause.
 4. Uses query_logs (narrowed by service, level and time range) to find the specific error
    messages that explain the mechanism, not just that something failed.
-5. Follows the dependency graph: if a downstream service (e.g. payments) is impacted, check
-   whether that explains anomalies in the services that call it (e.g. checkout, frontend),
-   rather than treating each anomaly as independent.
+5. Follows the dependency graph: if a service is impacted, check whether that explains
+   anomalies in the services that call it, rather than treating each anomaly as independent.
+
+If the question suggests a cause ("did X cause this?"), treat it as a hypothesis to test
+against the data, not as a fact. If the suggested service looks healthy, say so and find the
+actual cause among the services that are anomalous.
 
 Once you have enough evidence, STOP investigating and answer by calling submit_report. That
 call is the only way to answer: plain-text answers are not recorded. In the report, cite the
@@ -182,7 +187,7 @@ func (a *Agent) run(ctx context.Context, question string, stats *runStats) (*Rep
 			// All tools must still be sent: the conversation contains
 			// tool_use/tool_result blocks, which the API rejects without
 			// their definitions. This tool_choice forces submit_report.
-			req.ToolChoice = &claude.ToolChoice{Type: "tool", Name: submitReportToolName}
+			req.ToolChoice = &claude.ToolChoice{Type: "tool", Name: SubmitReportToolName}
 		}
 
 		// Size of what we're about to send — useful for watching the context
@@ -235,7 +240,7 @@ func (a *Agent) run(ctx context.Context, question string, stats *runStats) (*Rep
 				continue
 			}
 			toolUses = append(toolUses, block)
-			if block.Name == submitReportToolName {
+			if block.Name == SubmitReportToolName {
 				submits = append(submits, block)
 			}
 		}
@@ -276,12 +281,12 @@ func (a *Agent) run(ctx context.Context, question string, stats *runStats) (*Rep
 					"the model kept calling tools on the final turn", a.cfg.MaxTurns)
 			}
 			return nil, fmt.Errorf("exceeded max turns (%d) without a report: "+
-				"the model answered in plain text instead of calling %s", a.cfg.MaxTurns, submitReportToolName)
+				"the model answered in plain text instead of calling %s", a.cfg.MaxTurns, SubmitReportToolName)
 		}
 
 		var next []claude.ContentBlock
 		for _, block := range toolUses {
-			if block.Name == submitReportToolName {
+			if block.Name == SubmitReportToolName {
 				next = append(next, claude.ContentBlock{
 					Type: "tool_result", ToolUseID: block.ID, Content: reportErr.Error(), IsError: true,
 				})

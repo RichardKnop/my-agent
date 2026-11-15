@@ -1,0 +1,19 @@
+{
+  "description": "A payments deploy cuts the DB connection pool timeout from 5000ms to 500ms. payments times out acquiring connections, checkout (a synchronous caller) errors, frontend returns 503s; a rollback fixes it. payments-db itself stays healthy (the fault is the client-side pool timeout), as do inventory and inventory-db. Uses the committed dataset in data/.",
+  "data_dir": "../../data",
+  "now": "2026-08-24T09:00:00Z",
+  "questions": [
+    "why did checkout error rate spike yesterday afternoon?",
+    "Checkout was failing for a while yesterday. What happened?",
+    "Users reported 503 errors on the website yesterday afternoon. Find the root cause.",
+    "Was there a production incident yesterday? If so, what caused it?",
+    "Did the inventory service cause the checkout errors yesterday?",
+    "Investigate the elevated error rates between 14:00 and 16:00 UTC on 2026-08-23."
+  ],
+  "expect": {
+    "root_cause_service": "payments",
+    "triggering_change": {"service": "payments", "version": "v2.14.0"},
+    "affected_services": ["payments", "checkout", "frontend"],
+    "unaffected_services": ["payments-db", "inventory", "inventory-db"]
+  }
+}

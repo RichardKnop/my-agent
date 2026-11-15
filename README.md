@@ -46,6 +46,9 @@ has to actually localize the fault rather than assume every service is broken.
 
 ```
 cmd/agent/main.go        CLI entrypoint: wires everything together, runs one question
+cmd/eval/main.go         eval CLI: runs the agent over every scenario in evals/, prints rates
+internal/eval/           scenarios, grading, trace measurements, result summaries (stage 4)
+evals/                   one directory per scenario (questions + expected answer), results/
 internal/agent/          the agentic loop (call Claude -> run tools -> repeat) + system prompt
 internal/claude/         thin, dependency-free Anthropic Messages API client (raw HTTP)
 internal/tools/          tool implementations + their JSON-schema definitions
@@ -285,6 +288,87 @@ This is deliberately the smallest possible version of agent observability. It's 
 today; the shape (a span per LLM/tool call, with duration and attributes) is exactly what
 you'd emit as an OpenTelemetry span in stage 5.
 
+## Evals
+
+`go run ./cmd/eval` runs the agent over a set of incident scenarios with known answers and
+reports how often it finds the root cause, and at what cost:
+
+```
+go run ./cmd/eval -base-url http://localhost:11434 -model qwen3-coder   # free, local
+go run ./cmd/eval -repeat 3 -run payments                               # Anthropic: costs money
+```
+
+Each scenario is a directory under `evals/` with a `scenario.json`: the dataset to use, the
+time the agent is told it is, several phrasings of the question, and the expected answer.
+Every question is a full, independent agent run (asked `-repeat` times), and each run is:
+
+- **graded on its structured report**, with no phrase matching and no grader model.
+  `root_cause_service` must equal the expected service. `triggering_change` is free text
+  ("v2.14.0", "payments deploy v2.14.0"), so it must *contain* the expected version and
+  refer to the expected service: if it names a service, the right one must be among
+  them, and a bare version falls back to `root_cause_service`. A version alone could
+  belong to another service, and the service that changed isn't always the one that
+  failed. Those two checks decide pass/fail. `affected_services` is scored
+  as the share of expected services named (missing a downstream service is a weaker
+  answer, not a wrong one), and naming a healthy control service is recorded separately;
+- **measured from its trace**: turns, tokens, duration, tool calls and tool errors,
+  rejected reports, and whether the budget ran out. A change that keeps the pass rate but
+  doubles the turns is still a regression, and reading the trace (rather than the agent's
+  internal counters) means evals depend only on the record a production pipeline would see.
+
+Output is one line per run while it goes, then a summary table per scenario.
+
+**The first prompt change measured by the evals.** In the first runs (qwen3-coder), the
+leading question "Did the inventory service cause the checkout errors yesterday?" failed:
+the agent investigated only inventory, found no errors and no deploy there, and still
+answered "inventory" with high confidence, without ever looking at payments. That's
+confirmation bias, and it only shows up because one phrasing points at the wrong
+service. Three measurements, each with its results committed in `evals/results/` (`-repeat 3`,
+18 runs):
+
+```
+                                    pass  root cause  change  affected  budget out  turns  tokens in/cached/out  time
+1. first prompt (hinted)*            5/6         5/6     5/6       78%         4/6    7.7        3.9K/31.1K/933   32s
+2. hints removed                   16/18       16/18   16/18       81%       13/18    7.7        4.7K/31.3K/945   34s
+3. survey + hypothesis + schema    18/18       18/18   18/18       98%        0/18    5.3        8.0K/28.8K/1.3K   56s
+   * one repeat
+```
+
+- **1 → 2:** the playbook used the incident's own services as its examples ("if a downstream
+  service (e.g. payments) is impacted ... callers (e.g. checkout, frontend)"), and so
+  did a tool parameter. Removing them gave the honest baseline: the leading question
+  still failed 2 of 3 times.
+- **2 → 3,** the change that fixed it: the playbook now asks the agent to **survey every service
+  first**, querying error_rate for all of them in one turn of parallel tool calls, before
+  committing to an explanation; a cause suggested by the question is a hypothesis to test;
+  and the report schema says `affected_services` means every service that deviated from
+  its baseline and that high confidence needs direct evidence in the root-cause service.
+  The survey is the big lever: the agent sees payments spiking and inventory flat before it
+  chooses a path, frontend is affected on the evidence, and one parallel turn replaces
+  several sequential ones, so no run ran out of budget.
+
+The cost is visible too: each run takes longer (34s → 56s locally) and sends more new
+tokens (six metric results land in one turn), while using fewer turns. With only one
+scenario, a perfect score mostly says the prompt fits this incident; more scenarios are
+what show whether it generalizes.
+
+The full results (every report, grade and measurement, plus the model, settings and git
+commit) go to `evals/results/<timestamp>-<model>.json`, small enough to commit, so a
+prompt or model change can be compared against an earlier run. Each run's trace is kept
+under `traces/eval-<timestamp>/`. Two design points:
+
+- **Variety comes from phrasings, not repetition.** A local model asked the same question
+  twice often makes nearly the same run, so each scenario asks the question several
+  ways: vague, specific, from the user's side ("503s on the website"), and one that
+  points at the wrong service ("did inventory cause it?").
+- **Infrastructure failures aren't agent failures.** The client already retries 429s and
+  5xx, so if a model call still fails, the eval stops instead of recording every
+  remaining run as a wrong answer.
+
+There's one scenario so far, on the committed dataset. More scenarios need their own
+datasets from the generator: a deploy that isn't the cause, an incident with no deploy, a
+quiet day with nothing wrong. Those keep the prompt from being tuned to one incident.
+
 ## Roadmap (staged, one piece per session)
 
 1. **Core agentic loop — done, this repo.** Tool-use loop, mock dataset, tracing, turn cap.
@@ -296,10 +380,12 @@ you'd emit as an OpenTelemetry span in stage 5.
    as an MCP server instead of an in-process Go function registry, so any MCP client
    (Claude Desktop, another agent) can use them — this is the direct analogue of "build the
    MCP servers that let customers' agents read telemetry."
-4. **Evals.** A fixed set of incident scenarios with known root causes; run the agent
-   against each, score whether it identified the right cause, and track cost/latency per
-   scenario over time — the harness that answers "does this still work after I changed the
-   prompt/model/tools?"
+4. **Evals — started.** A fixed set of incident scenarios with known root causes; run the
+   agent against each, score whether it identified the right cause, and track cost/latency
+   per scenario over time — the harness that answers "does this still work after I changed
+   the prompt/model/tools?" The runner and the first scenario exist (see **Evals** above);
+   next are more scenarios from the generator, a sampling temperature for repeat runs, and
+   a grader model for the free-text summary.
 5. **Tracing & cost as a real pipeline.** Replace the JSONL file with something queryable —
    ClickHouse is the obvious choice here — and build a small dashboard: cost per
    investigation, p99 agent latency, tool-call error rate.

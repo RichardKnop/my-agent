@@ -1,0 +1,918 @@
+{
+  "started_at": "2026-11-15T20:41:23.064376Z",
+  "commit": "5e97c49",
+  "model": "qwen3-coder",
+  "base_url": "http://localhost:11434/v1/messages",
+  "max_turns": 8,
+  "max_tokens": 4096,
+  "repeat": 3,
+  "summaries": [
+    {
+      "scenario": "payments-pool-timeout",
+      "runs": 18,
+      "passed": 18,
+      "root_cause_service": 18,
+      "triggering_change": 18,
+      "affected_recall": 0.9814814814814814,
+      "wrongly_affected": 0,
+      "errors": 0,
+      "budget_exhausted": 0,
+      "rejected_reports": 0,
+      "tool_errors": 1,
+      "avg_turns": 5.333333333333333,
+      "avg_input_tokens": 7969.111111111111,
+      "avg_cache_read_input_tokens": 28819,
+      "avg_output_tokens": 1340.611111111111,
+      "avg_duration_ms": 55561.166666666664
+    }
+  ],
+  "runs": [
+    {
+      "scenario": "payments-pool-timeout",
+      "question": 0,
+      "question_text": "why did checkout error rate spike yesterday afternoon?",
+      "repeat": 1,
+      "report": {
+        "summary": "A deploy (v2.14.0) to the payments service reduced the database connection pool timeout from 5000ms to 500ms, causing connection timeouts and cascading failures in checkout and frontend services.",
+        "root_cause_service": "payments",
+        "triggering_change": "v2.14.0",
+        "affected_services": [
+          "frontend",
+          "checkout",
+          "payments"
+        ],
+        "evidence": [
+          "payments error rate spiked at 14:31 UTC with max 16.09%, coinciding with deploy v2.14.0",
+          "Logs show 'payments-db: context deadline exceeded acquiring connection from pool (timeout=500ms, pool_size=20, in_use=20)'",
+          "checkout error rate spiked at 14:31 UTC with max 15.88% due to payments.Charge failed: rpc error: code = DeadlineExceeded",
+          "frontend error rate spiked at 14:31 UTC with max 6.15% due to checkout service returned 503 Service Unavailable",
+          "The rollback deploy v2.14.1 at 15:45 restored normal operations"
+        ],
+        "confidence": "high",
+        "confidence_reason": "The error rate spike in payments service started at 14:31 UTC, coinciding with deploy v2.14.0. The logs show connection timeout errors that directly caused cascading failures in checkout and frontend services.",
+        "recommended_action": "Rollback the payments service to version v2.14.1 and investigate why the connection pool timeout was reduced so drastically."
+      },
+      "grade": {
+        "root_cause_service": true,
+        "triggering_change": true,
+        "affected_recall": 1,
+        "pass": true
+      },
+      "stats": {
+        "turns": 7,
+        "input_tokens": 8723,
+        "cache_read_input_tokens": 36275,
+        "output_tokens": 1316,
+        "budget_exhausted": false,
+        "duration_ms": 55811,
+        "tool_calls": {
+          "get_deploys": 1,
+          "list_services": 1,
+          "query_logs": 6,
+          "query_metrics": 4
+        },
+        "tool_errors": 1,
+        "rejected_reports": 0
+      },
+      "trace_path": "traces/eval-20261115T204123Z/payments-pool-timeout-q0-r1.jsonl"
+    },
+    {
+      "scenario": "payments-pool-timeout",
+      "question": 0,
+      "question_text": "why did checkout error rate spike yesterday afternoon?",
+      "repeat": 2,
+      "report": {
+        "summary": "A deploy of payments service v2.14.0 reduced the database connection pool timeout from 5000ms to 500ms, causing context deadline exceeded errors when acquiring connections, which led to cascading failures in checkout and frontend services.",
+        "root_cause_service": "payments",
+        "triggering_change": "payments service v2.14.0 deploy at 2026-08-23T14:31:00Z",
+        "affected_services": [
+          "frontend",
+          "checkout",
+          "payments"
+        ],
+        "evidence": [
+          "payments service deployed v2.14.0 at 2026-08-23T14:31:00Z",
+          "payments error rate spiked to 15.03% at 2026-08-23T14:31:00Z",
+          "checkout error rate spiked to 15.48% at 2026-08-23T14:31:00Z",
+          "frontend error rate spiked to 6.15% at 2026-08-23T14:31:00Z",
+          "payments logs show ERROR: payments-db: context deadline exceeded acquiring connection from pool (timeout=500ms)",
+          "checkout logs show ERROR: payments.Charge failed: rpc error: code = DeadlineExceeded desc = context deadline exceeded"
+        ],
+        "confidence": "high",
+        "confidence_reason": "The error rate spikes in payments, checkout, and frontend services all align with the deploy of payments service v2.14.0 at 14:31 UTC. Logs confirm that the root cause is a context deadline exceeded error when acquiring connections from the payments-db connection pool due to the timeout being reduced to 500ms.",
+        "recommended_action": "Rollback the payments service to v2.13.0 or restore the connection pool timeout to 5000ms."
+      },
+      "grade": {
+        "root_cause_service": true,
+        "triggering_change": true,
+        "affected_recall": 1,
+        "pass": true
+      },
+      "stats": {
+        "turns": 6,
+        "input_tokens": 5954,
+        "cache_read_input_tokens": 29953,
+        "output_tokens": 1259,
+        "budget_exhausted": false,
+        "duration_ms": 44711,
+        "tool_calls": {
+          "get_deploys": 1,
+          "list_services": 1,
+          "query_logs": 4,
+          "query_metrics": 4
+        },
+        "tool_errors": 0,
+        "rejected_reports": 0
+      },
+      "trace_path": "traces/eval-20261115T204123Z/payments-pool-timeout-q0-r2.jsonl"
+    },
+    {
+      "scenario": "payments-pool-timeout",
+      "question": 0,
+      "question_text": "why did checkout error rate spike yesterday afternoon?",
+      "repeat": 3,
+      "report": {
+        "summary": "A deployment (v2.14.0) reduced the payment-db connection pool timeout from 5000ms to 500ms, causing context deadline exceeded errors when acquiring connections. This led to checkout failures as it could not charge payments.",
+        "root_cause_service": "payments",
+        "triggering_change": "payments v2.14.0",
+        "affected_services": [
+          "frontend",
+          "checkout",
+          "payments"
+        ],
+        "evidence": [
+          "payments error rate spiked at 2026-08-23T14:31:00Z with max 15.03%",
+          "checkout error rate spiked at 2026-08-23T14:31:00Z with max 16.09%",
+          "payments deploy v2.14.0 at 2026-08-23T14:31:00Z reduced connection pool timeout from 5000ms to 500ms",
+          "payments logs show 'context deadline exceeded acquiring connection from pool (timeout=500ms)' errors",
+          "checkout logs show 'rpc error: code = DeadlineExceeded desc = context deadline exceeded' errors"
+        ],
+        "confidence": "high",
+        "confidence_reason": "The error rate spike in payments service started at 14:31 UTC, exactly when v2.14.0 was deployed. The logs show a context deadline exceeded error when acquiring a connection from the pool, which caused checkout to fail as well.",
+        "recommended_action": "Rollback payments service to v2.13.9 and investigate the root cause of the connection pool timeout issue."
+      },
+      "grade": {
+        "root_cause_service": true,
+        "triggering_change": true,
+        "affected_recall": 1,
+        "pass": true
+      },
+      "stats": {
+        "turns": 5,
+        "input_tokens": 5458,
+        "cache_read_input_tokens": 22059,
+        "output_tokens": 1014,
+        "budget_exhausted": false,
+        "duration_ms": 36384,
+        "tool_calls": {
+          "get_deploys": 1,
+          "list_services": 1,
+          "query_logs": 2,
+          "query_metrics": 4
+        },
+        "tool_errors": 0,
+        "rejected_reports": 0
+      },
+      "trace_path": "traces/eval-20261115T204123Z/payments-pool-timeout-q0-r3.jsonl"
+    },
+    {
+      "scenario": "payments-pool-timeout",
+      "question": 1,
+      "question_text": "Checkout was failing for a while yesterday. What happened?",
+      "repeat": 1,
+      "report": {
+        "summary": "The payments service deploy v2.14.0 introduced a 500ms timeout for database connections, which caused connection pool exhaustion under load. This led to timeouts in the payments service, which then caused failures in checkout and frontend.",
+        "root_cause_service": "payments",
+        "triggering_change": "payments service deploy v2.14.0",
+        "affected_services": [
+          "frontend",
+          "checkout",
+          "payments"
+        ],
+        "evidence": [
+          "payments service error rate rose at 2026-08-23T14:31:00Z with deploy v2.14.0",
+          "payments logs show 'context deadline exceeded acquiring connection from pool (timeout=500ms)'",
+          "checkout service started failing with 'rpc error: code = DeadlineExceeded desc = context deadline exceeded' at 2026-08-23T14:31:00Z",
+          "frontend service started failing with 'checkout service returned 503 Service Unavailable' at 2026-08-23T14:31:00Z",
+          "payments rollback deployed at 2026-08-23T15:45:00Z"
+        ],
+        "confidence": "high",
+        "confidence_reason": "The error rate in payments service started rising at 14:31Z, coinciding with the deploy of version v2.14.0. The logs show a context deadline exceeded error when acquiring a connection from the pool. This directly caused checkout to fail and subsequently frontend to fail.",
+        "recommended_action": "Rollback the payments service to v2.14.1 and monitor for recovery."
+      },
+      "grade": {
+        "root_cause_service": true,
+        "triggering_change": true,
+        "affected_recall": 1,
+        "pass": true
+      },
+      "stats": {
+        "turns": 5,
+        "input_tokens": 8182,
+        "cache_read_input_tokens": 26514,
+        "output_tokens": 1375,
+        "budget_exhausted": false,
+        "duration_ms": 60404,
+        "tool_calls": {
+          "get_deploys": 1,
+          "list_services": 1,
+          "query_logs": 4,
+          "query_metrics": 6
+        },
+        "tool_errors": 0,
+        "rejected_reports": 0
+      },
+      "trace_path": "traces/eval-20261115T204123Z/payments-pool-timeout-q1-r1.jsonl"
+    },
+    {
+      "scenario": "payments-pool-timeout",
+      "question": 1,
+      "question_text": "Checkout was failing for a while yesterday. What happened?",
+      "repeat": 2,
+      "report": {
+        "summary": "The payments service deploy v2.14.0 reduced the database connection pool timeout from 5000ms to 500ms, causing context deadline exceeded errors when acquiring connections. This led to checkout failures and ultimately frontend failures.",
+        "root_cause_service": "payments",
+        "triggering_change": "payments service deploy v2.14.0",
+        "affected_services": [
+          "frontend",
+          "checkout",
+          "payments"
+        ],
+        "evidence": [
+          "payments service error rate increased sharply at 14:31Z",
+          "payments service deployed v2.14.0 at 14:31Z with reduced connection pool timeout",
+          "logs show 'payments-db: context deadline exceeded acquiring connection from pool (timeout=500ms, pool_size=20, in_use=20)'",
+          "checkout service error rate increased sharply at 14:31Z due to payments failures",
+          "frontend service error rate increased sharply at 14:31Z due to checkout failures"
+        ],
+        "confidence": "high",
+        "confidence_reason": "The error rate of the payments service started increasing sharply at 14:31Z, matching the deploy of version v2.14.0 which reduced the connection pool timeout. The logs show context deadline exceeded errors when acquiring connections from the pool. This caused checkout to fail, which in turn caused frontend to fail.",
+        "recommended_action": "Rollback the payments service to v2.13.0 and investigate why the connection pool timeout was reduced."
+      },
+      "grade": {
+        "root_cause_service": true,
+        "triggering_change": true,
+        "affected_recall": 1,
+        "pass": true
+      },
+      "stats": {
+        "turns": 5,
+        "input_tokens": 7937,
+        "cache_read_input_tokens": 26529,
+        "output_tokens": 1244,
+        "budget_exhausted": false,
+        "duration_ms": 51774,
+        "tool_calls": {
+          "get_deploys": 1,
+          "list_services": 1,
+          "query_logs": 3,
+          "query_metrics": 6
+        },
+        "tool_errors": 0,
+        "rejected_reports": 0
+      },
+      "trace_path": "traces/eval-20261115T204123Z/payments-pool-timeout-q1-r2.jsonl"
+    },
+    {
+      "scenario": "payments-pool-timeout",
+      "question": 1,
+      "question_text": "Checkout was failing for a while yesterday. What happened?",
+      "repeat": 3,
+      "report": {
+        "summary": "A deploy to the payments service reduced the database connection pool timeout from 5000ms to 500ms, causing connection acquisition timeouts and leading to checkout failures, which in turn caused frontend failures.",
+        "root_cause_service": "payments",
+        "triggering_change": "payments v2.14.0 deploy",
+        "affected_services": [
+          "frontend",
+          "checkout",
+          "payments"
+        ],
+        "evidence": [
+          "payments service error rate spiked at 14:31Z with max 16.09%",
+          "payments deploy v2.14.0 occurred at 14:31Z with reduced connection pool timeout from 5000ms to 500ms",
+          "payments logs show 'context deadline exceeded acquiring connection from pool (timeout=500ms)' errors",
+          "checkout service error rate spiked at 14:31Z with max 15.88%",
+          "checkout logs show 'payments.Charge failed: rpc error: code = DeadlineExceeded' errors",
+          "frontend service error rate spiked at 14:31Z with max 6.15%"
+        ],
+        "confidence": "high",
+        "confidence_reason": "The error rate of the payments service spiked at 14:31, coinciding with a deploy of version v2.14.0 that reduced the connection pool timeout. The logs show context deadline exceeded errors when acquiring connections. This caused checkout to fail, which in turn caused frontend to fail.",
+        "recommended_action": "Rollback payments service to v2.13.0 or restore the connection pool timeout to 5000ms."
+      },
+      "grade": {
+        "root_cause_service": true,
+        "triggering_change": true,
+        "affected_recall": 1,
+        "pass": true
+      },
+      "stats": {
+        "turns": 6,
+        "input_tokens": 5467,
+        "cache_read_input_tokens": 29727,
+        "output_tokens": 1001,
+        "budget_exhausted": false,
+        "duration_ms": 37629,
+        "tool_calls": {
+          "get_deploys": 1,
+          "list_services": 1,
+          "query_logs": 2,
+          "query_metrics": 4
+        },
+        "tool_errors": 0,
+        "rejected_reports": 0
+      },
+      "trace_path": "traces/eval-20261115T204123Z/payments-pool-timeout-q1-r3.jsonl"
+    },
+    {
+      "scenario": "payments-pool-timeout",
+      "question": 2,
+      "question_text": "Users reported 503 errors on the website yesterday afternoon. Find the root cause.",
+      "repeat": 1,
+      "report": {
+        "summary": "A change in the payments service reduced the database connection pool timeout from 5000ms to 500ms, causing context deadline exceeded errors when acquiring connections. This led to cascading failures in checkout and frontend services.",
+        "root_cause_service": "payments",
+        "triggering_change": "payments service version v2.14.0",
+        "affected_services": [
+          "frontend",
+          "checkout",
+          "payments"
+        ],
+        "evidence": [
+          "payments service error rate peaked at 16.09% at 2026-08-23T15:34:00Z",
+          "payments service deployed v2.14.0 at 2026-08-23T14:31:00Z with connection pool timeout reduced to 500ms",
+          "payments logs show 'context deadline exceeded acquiring connection from pool (timeout=500ms)' errors starting 2026-08-23T14:31:45Z",
+          "checkout service error rate peaked at 16.09% at 2026-08-23T15:34:00Z due to payments.Charge failed with DeadlineExceeded",
+          "frontend service error rate peaked at 6.15% at 2026-08-23T14:42:00Z due to checkout returning 503",
+          "payments service rolled back to v2.14.1 at 2026-08-23T15:45:00Z after incident INC-1042"
+        ],
+        "confidence": "high",
+        "confidence_reason": "The error rate in payments service started rising at 14:31, and the logs show context deadline exceeded errors due to a 500ms timeout on connection pool. The rollback at 15:45 restored normal operations.",
+        "recommended_action": "Rollback the payments service to version v2.14.1 and investigate connection pool sizing and timeout values."
+      },
+      "grade": {
+        "root_cause_service": true,
+        "triggering_change": true,
+        "affected_recall": 1,
+        "pass": true
+      },
+      "stats": {
+        "turns": 5,
+        "input_tokens": 8189,
+        "cache_read_input_tokens": 26542,
+        "output_tokens": 1458,
+        "budget_exhausted": false,
+        "duration_ms": 62441,
+        "tool_calls": {
+          "get_deploys": 1,
+          "list_services": 1,
+          "query_logs": 4,
+          "query_metrics": 6
+        },
+        "tool_errors": 0,
+        "rejected_reports": 0
+      },
+      "trace_path": "traces/eval-20261115T204123Z/payments-pool-timeout-q2-r1.jsonl"
+    },
+    {
+      "scenario": "payments-pool-timeout",
+      "question": 2,
+      "question_text": "Users reported 503 errors on the website yesterday afternoon. Find the root cause.",
+      "repeat": 2,
+      "report": {
+        "summary": "A deploy to the payments service reduced the database connection pool timeout from 5000ms to 500ms, causing context deadline exceeded errors when acquiring connections. This led to cascading failures in checkout and frontend services.",
+        "root_cause_service": "payments",
+        "triggering_change": "v2.14.0",
+        "affected_services": [
+          "frontend",
+          "checkout",
+          "payments"
+        ],
+        "evidence": [
+          "payments service error rate spiked at 2026-08-23T14:31:00Z with version v2.14.0",
+          "Log message 'payments-db: context deadline exceeded acquiring connection from pool (timeout=500ms, pool_size=20, in_use=20)' at 2026-08-23T14:31:45Z in payments service",
+          "checkout service error rate spiked at 2026-08-23T14:31:00Z due to payments failure",
+          "frontend service error rate spiked at 2026-08-23T14:31:00Z due to checkout failure",
+          "Deploy v2.14.0 reduced connection pool timeout from 5000ms to 500ms in payments service at 2026-08-23T14:31:00Z",
+          "Rollback deploy v2.14.1 occurred at 2026-08-23T15:45:00Z after incident"
+        ],
+        "confidence": "high",
+        "confidence_reason": "The error rate spikes in payments service correlate directly with a deploy that changed connection pool timeout. The logs show the specific error message of context deadline exceeded when acquiring connections, which explains why checkout and frontend also failed.",
+        "recommended_action": "Rollback the payments service to version v2.14.1 and investigate why the connection pool timeout was reduced so drastically."
+      },
+      "grade": {
+        "root_cause_service": true,
+        "triggering_change": true,
+        "affected_recall": 1,
+        "pass": true
+      },
+      "stats": {
+        "turns": 5,
+        "input_tokens": 7937,
+        "cache_read_input_tokens": 26564,
+        "output_tokens": 1354,
+        "budget_exhausted": false,
+        "duration_ms": 61309,
+        "tool_calls": {
+          "get_deploys": 1,
+          "list_services": 1,
+          "query_logs": 3,
+          "query_metrics": 6
+        },
+        "tool_errors": 0,
+        "rejected_reports": 0
+      },
+      "trace_path": "traces/eval-20261115T204123Z/payments-pool-timeout-q2-r2.jsonl"
+    },
+    {
+      "scenario": "payments-pool-timeout",
+      "question": 2,
+      "question_text": "Users reported 503 errors on the website yesterday afternoon. Find the root cause.",
+      "repeat": 3,
+      "report": {
+        "summary": "A deploy to the payments service reduced the database connection pool timeout from 5000ms to 500ms, causing context deadline exceeded errors when acquiring connections. This led to cascading failures in checkout and frontend services.",
+        "root_cause_service": "payments",
+        "triggering_change": "v2.14.0",
+        "affected_services": [
+          "frontend",
+          "checkout",
+          "payments"
+        ],
+        "evidence": [
+          "payments service error rate spiked at 2026-08-23T14:31Z with max 12.58%, after deploy v2.14.0 at 2026-08-23T14:31Z reducing connection pool timeout to 500ms",
+          "payments service logs show 'context deadline exceeded acquiring connection from pool (timeout=500ms, pool_size=20, in_use=20)' errors",
+          "checkout service error rate spiked at 2026-08-23T14:31Z with max 16.09% due to payments service failures",
+          "frontend service error rate spiked at 2026-08-23T14:31Z with max 6.15% due to checkout service failures",
+          "The rollback deploy v2.14.1 at 2026-08-23T15:45Z restored normal operation"
+        ],
+        "confidence": "high",
+        "confidence_reason": "The error rate of the payments service spiked at 14:31Z, coinciding with a deploy that reduced the database connection pool timeout. The logs show 'context deadline exceeded acquiring connection from pool' errors in payments service, and checkout and frontend services show corresponding downstream errors.",
+        "recommended_action": "Rollback the payments service to a stable version and investigate why the connection pool timeout was reduced in the first place."
+      },
+      "grade": {
+        "root_cause_service": true,
+        "triggering_change": true,
+        "affected_recall": 1,
+        "pass": true
+      },
+      "stats": {
+        "turns": 5,
+        "input_tokens": 8167,
+        "cache_read_input_tokens": 26564,
+        "output_tokens": 1422,
+        "budget_exhausted": false,
+        "duration_ms": 56286,
+        "tool_calls": {
+          "get_deploys": 1,
+          "list_services": 1,
+          "query_logs": 4,
+          "query_metrics": 6
+        },
+        "tool_errors": 0,
+        "rejected_reports": 0
+      },
+      "trace_path": "traces/eval-20261115T204123Z/payments-pool-timeout-q2-r3.jsonl"
+    },
+    {
+      "scenario": "payments-pool-timeout",
+      "question": 3,
+      "question_text": "Was there a production incident yesterday? If so, what caused it?",
+      "repeat": 1,
+      "report": {
+        "summary": "A deploy to the payments service reduced the database connection pool timeout from 5000ms to 500ms, causing context deadline errors when acquiring connections. This led to increased error rates in payments, which propagated to checkout and frontend services.",
+        "root_cause_service": "payments",
+        "triggering_change": "v2.14.0",
+        "affected_services": [
+          "frontend",
+          "checkout",
+          "payments"
+        ],
+        "evidence": [
+          "Error rate for payments service spiked at 2026-08-23T14:31:00Z with max error rate of 12.58%",
+          "Error rate for checkout service spiked at 2026-08-23T14:31:00Z with max error rate of 16.09%",
+          "Error rate for frontend service spiked at 2026-08-23T14:31:00Z with max error rate of 6.15%",
+          "Deploy v2.14.0 was released to payments service at 2026-08-23T14:31:00Z, reducing connection pool timeout from 5000ms to 500ms",
+          "Error logs show \"payments-db: context deadline exceeded acquiring connection from pool (timeout=500ms, pool_size=20, in_use=20)\" starting at 2026-08-23T14:31:45Z",
+          "Deploy v2.14.1 was released to payments service at 2026-08-23T15:45:00Z, rolling back the change",
+          "Error rates for all affected services returned to normal after v2.14.1 deploy"
+        ],
+        "confidence": "high",
+        "confidence_reason": "The error rate spike in payments service started at the time of deploy v2.14.0, and the error logs show a context deadline exceeded acquiring connection from pool due to the reduced timeout. The rollback deploy v2.14.1 restored normal operations.",
+        "recommended_action": "Rollback the problematic deploy and investigate connection pool configuration in more detail."
+      },
+      "grade": {
+        "root_cause_service": true,
+        "triggering_change": true,
+        "affected_recall": 1,
+        "pass": true
+      },
+      "stats": {
+        "turns": 5,
+        "input_tokens": 7717,
+        "cache_read_input_tokens": 26526,
+        "output_tokens": 1316,
+        "budget_exhausted": false,
+        "duration_ms": 51821,
+        "tool_calls": {
+          "get_deploys": 1,
+          "list_services": 1,
+          "query_logs": 2,
+          "query_metrics": 6
+        },
+        "tool_errors": 0,
+        "rejected_reports": 0
+      },
+      "trace_path": "traces/eval-20261115T204123Z/payments-pool-timeout-q3-r1.jsonl"
+    },
+    {
+      "scenario": "payments-pool-timeout",
+      "question": 3,
+      "question_text": "Was there a production incident yesterday? If so, what caused it?",
+      "repeat": 2,
+      "report": {
+        "summary": "A deploy of the payments service (v2.14.0) reduced the database connection pool timeout from 5000ms to 500ms, causing connection acquisition timeouts and leading to cascading failures in checkout and frontend services.",
+        "root_cause_service": "payments",
+        "triggering_change": "payments v2.14.0 deploy",
+        "affected_services": [
+          "frontend",
+          "checkout",
+          "payments"
+        ],
+        "evidence": [
+          "Payments service error rate spiked at 14:31 UTC with max 12.58%, coinciding with deploy v2.14.0",
+          "Deploy v2.14.0 reduced payments-db connection pool timeout from 5000ms to 500ms",
+          "Logs show 'payments-db: context deadline exceeded acquiring connection from pool' errors in payments service",
+          "Checkout service shows 'payments.Charge failed: rpc error: code = DeadlineExceeded' errors, starting at 14:31 UTC",
+          "Frontend service shows 'checkout service returned 503 Service Unavailable' errors, starting at 14:31 UTC"
+        ],
+        "confidence": "high",
+        "confidence_reason": "The error rate of the payments service spiked at 14:31, coinciding with a deploy of v2.14.0 that reduced the connection pool timeout. The logs show context deadline exceeded errors when acquiring connections from the pool. These errors propagated to checkout and frontend services.",
+        "recommended_action": "Rollback payments service to v2.13.0 and investigate connection pool configuration."
+      },
+      "grade": {
+        "root_cause_service": true,
+        "triggering_change": true,
+        "affected_recall": 1,
+        "pass": true
+      },
+      "stats": {
+        "turns": 5,
+        "input_tokens": 8609,
+        "cache_read_input_tokens": 27469,
+        "output_tokens": 1406,
+        "budget_exhausted": false,
+        "duration_ms": 59638,
+        "tool_calls": {
+          "get_deploys": 1,
+          "list_services": 1,
+          "query_logs": 5,
+          "query_metrics": 6
+        },
+        "tool_errors": 0,
+        "rejected_reports": 0
+      },
+      "trace_path": "traces/eval-20261115T204123Z/payments-pool-timeout-q3-r2.jsonl"
+    },
+    {
+      "scenario": "payments-pool-timeout",
+      "question": 3,
+      "question_text": "Was there a production incident yesterday? If so, what caused it?",
+      "repeat": 3,
+      "report": {
+        "summary": "A deploy of payments service v2.14.0 reduced the database connection pool timeout from 5000ms to 500ms, causing context deadline exceeded errors when acquiring connections. This led to cascading failures in checkout and frontend services.",
+        "root_cause_service": "payments",
+        "triggering_change": "payments v2.14.0",
+        "affected_services": [
+          "frontend",
+          "checkout",
+          "payments"
+        ],
+        "evidence": [
+          "Error rate for payments service rose sharply at 2026-08-23T14:31Z",
+          "Deploy of payments v2.14.0 occurred at 2026-08-23T14:31Z",
+          "Logs show \"payments-db: context deadline exceeded acquiring connection from pool (timeout=500ms)\" in payments service",
+          "Error rate for checkout service rose sharply at 2026-08-23T14:31Z as a downstream caller of payments",
+          "Error rate for frontend service rose sharply at 2026-08-23T14:31Z as a downstream caller of checkout"
+        ],
+        "confidence": "high",
+        "confidence_reason": "The error rates in payments service started rising sharply at 14:31Z, coinciding with a deploy of version v2.14.0. Logs show context deadline exceeded errors when acquiring connections from the payments-db pool, which is consistent with the timeout change in the deploy. The checkout and frontend services also showed elevated error rates as downstream callers of payments.",
+        "recommended_action": "Rollback the payments service to version v2.14.1, which reverts the connection pool timeout change."
+      },
+      "grade": {
+        "root_cause_service": true,
+        "triggering_change": true,
+        "affected_recall": 1,
+        "pass": true
+      },
+      "stats": {
+        "turns": 5,
+        "input_tokens": 8167,
+        "cache_read_input_tokens": 26544,
+        "output_tokens": 1382,
+        "budget_exhausted": false,
+        "duration_ms": 56760,
+        "tool_calls": {
+          "get_deploys": 1,
+          "list_services": 1,
+          "query_logs": 4,
+          "query_metrics": 6
+        },
+        "tool_errors": 0,
+        "rejected_reports": 0
+      },
+      "trace_path": "traces/eval-20261115T204123Z/payments-pool-timeout-q3-r3.jsonl"
+    },
+    {
+      "scenario": "payments-pool-timeout",
+      "question": 4,
+      "question_text": "Did the inventory service cause the checkout errors yesterday?",
+      "repeat": 1,
+      "report": {
+        "summary": "The payments service experienced a spike in errors due to a deploy (v2.14.0) that reduced the database connection pool timeout, causing connection acquisition timeouts and leading to cascading failures in the checkout service.",
+        "root_cause_service": "payments",
+        "triggering_change": "v2.14.0 deploy of payments service",
+        "affected_services": [
+          "checkout",
+          "payments"
+        ],
+        "evidence": [
+          "Payments service error rate spiked at 2026-08-23T14:31:00Z with deploy v2.14.0",
+          "Logs from payments service show 'context deadline exceeded acquiring connection from pool' errors at 2026-08-23T14:31:45Z",
+          "Checkout service error rate spiked at 2026-08-23T14:31:00Z and showed 'rpc error: code = DeadlineExceeded' messages",
+          "Payments service deployed v2.14.0 at 2026-08-23T14:31:00Z with changes to connection pool timeout",
+          "Payments service rolled back to v2.14.1 at 2026-08-23T15:45:00Z after the incident"
+        ],
+        "confidence": "high",
+        "confidence_reason": "The payments service showed a sharp increase in error rate coinciding with the deploy of v2.14.0, and logs show connection pool timeout errors. The checkout service, which depends on payments, also had correlated errors. A rollback was performed and the error rate returned to normal.",
+        "recommended_action": "Investigate why the connection pool timeout change caused a cascade of failures and consider a more gradual rollout or better testing of connection pool changes."
+      },
+      "grade": {
+        "root_cause_service": true,
+        "triggering_change": true,
+        "affected_recall": 0.6666666666666666,
+        "pass": true
+      },
+      "stats": {
+        "turns": 5,
+        "input_tokens": 7951,
+        "cache_read_input_tokens": 26510,
+        "output_tokens": 1314,
+        "budget_exhausted": false,
+        "duration_ms": 54510,
+        "tool_calls": {
+          "get_deploys": 1,
+          "list_services": 1,
+          "query_logs": 3,
+          "query_metrics": 6
+        },
+        "tool_errors": 0,
+        "rejected_reports": 0
+      },
+      "trace_path": "traces/eval-20261115T204123Z/payments-pool-timeout-q4-r1.jsonl"
+    },
+    {
+      "scenario": "payments-pool-timeout",
+      "question": 4,
+      "question_text": "Did the inventory service cause the checkout errors yesterday?",
+      "repeat": 2,
+      "report": {
+        "summary": "The payments service experienced a significant increase in error rate due to a deploy (v2.14.0) that reduced the database connection pool timeout from 5000ms to 500ms, causing timeouts when acquiring connections. This led to downstream failures in checkout and frontend services.",
+        "root_cause_service": "payments",
+        "triggering_change": "v2.14.0 deploy of payments service",
+        "affected_services": [
+          "frontend",
+          "checkout",
+          "payments"
+        ],
+        "evidence": [
+          "Payments service error rate spiked at 14:31 UTC with max 15.48%, coinciding with deploy v2.14.0 at 14:31 UTC",
+          "Log entries show 'payments-db: context deadline exceeded acquiring connection from pool (timeout=500ms, pool_size=20, in_use=20)' at 14:31 UTC",
+          "Checkout service error rate spiked at 14:31 UTC with max 16.09%, correlating with payments service issue",
+          "Frontend service error rate spiked at 14:31 UTC with max 6.15%, showing 503 errors from checkout service",
+          "The rollback of payments service to v2.14.1 at 15:45 UTC resolved the issue"
+        ],
+        "confidence": "high",
+        "confidence_reason": "The error rate of the payments service increased significantly at 14:31 UTC, matching the deployment of v2.14.0. The logs show connection timeout errors due to a reduced pool timeout. The checkout and frontend services also showed elevated error rates, correlating with the payments service anomaly.",
+        "recommended_action": "Rollback the payments service to v2.14.1 immediately and investigate why the connection pool timeout was reduced without proper load testing."
+      },
+      "grade": {
+        "root_cause_service": true,
+        "triggering_change": true,
+        "affected_recall": 1,
+        "pass": true
+      },
+      "stats": {
+        "turns": 6,
+        "input_tokens": 8279,
+        "cache_read_input_tokens": 36879,
+        "output_tokens": 1415,
+        "budget_exhausted": false,
+        "duration_ms": 58114,
+        "tool_calls": {
+          "get_deploys": 1,
+          "list_services": 1,
+          "query_logs": 4,
+          "query_metrics": 6
+        },
+        "tool_errors": 0,
+        "rejected_reports": 0
+      },
+      "trace_path": "traces/eval-20261115T204123Z/payments-pool-timeout-q4-r2.jsonl"
+    },
+    {
+      "scenario": "payments-pool-timeout",
+      "question": 4,
+      "question_text": "Did the inventory service cause the checkout errors yesterday?",
+      "repeat": 3,
+      "report": {
+        "summary": "A deploy to the payments service reduced the database connection pool timeout from 5000ms to 500ms, causing connection acquisition timeouts. This led to increased latency and errors in payments, which then caused checkout failures and frontend errors.",
+        "root_cause_service": "payments",
+        "triggering_change": "Deploy of payments service v2.14.0 at 2026-08-23T14:31:00Z",
+        "affected_services": [
+          "frontend",
+          "checkout",
+          "payments"
+        ],
+        "evidence": [
+          "Payments service error rate spiked at 2026-08-23T14:31:00Z",
+          "Checkout service error rate spiked at 2026-08-23T14:31:00Z",
+          "Payments service logs show 'payments-db: context deadline exceeded acquiring connection from pool (timeout=500ms, pool_size=20, in_use=20)' at 2026-08-23T14:31:45Z",
+          "Deploy to payments service v2.14.0 occurred at 2026-08-23T14:31:00Z, reducing DB connection pool timeout from 5000ms to 500ms",
+          "P99 latency in payments service increased sharply at 2026-08-23T14:36:00Z to 1428.1ms"
+        ],
+        "confidence": "high",
+        "confidence_reason": "The error rate in the payments service started rising sharply at 14:31 UTC, which matches the time when the checkout service began failing. The logs show a context deadline exceeded error in payments when trying to acquire a connection from the payments-db pool. A deploy to the payments service at 14:31 reduced the DB connection timeout, causing the cascade of failures.",
+        "recommended_action": "Rollback the payments service to the previous version (v2.13.1) and investigate why the connection pool timeout was reduced without sufficient load testing."
+      },
+      "grade": {
+        "root_cause_service": true,
+        "triggering_change": true,
+        "affected_recall": 1,
+        "pass": true
+      },
+      "stats": {
+        "turns": 5,
+        "input_tokens": 9634,
+        "cache_read_input_tokens": 27069,
+        "output_tokens": 1766,
+        "budget_exhausted": false,
+        "duration_ms": 72830,
+        "tool_calls": {
+          "get_deploys": 1,
+          "list_services": 1,
+          "query_logs": 5,
+          "query_metrics": 8
+        },
+        "tool_errors": 0,
+        "rejected_reports": 0
+      },
+      "trace_path": "traces/eval-20261115T204123Z/payments-pool-timeout-q4-r3.jsonl"
+    },
+    {
+      "scenario": "payments-pool-timeout",
+      "question": 5,
+      "question_text": "Investigate the elevated error rates between 14:00 and 16:00 UTC on 2026-08-23.",
+      "repeat": 1,
+      "report": {
+        "summary": "A deploy (v2.14.0) to the payments service reduced the database connection pool timeout from 5000ms to 500ms, causing context deadline errors when acquiring connections. This led to elevated error rates in payments, which cascaded to checkout and frontend services.",
+        "root_cause_service": "payments",
+        "triggering_change": "v2.14.0",
+        "affected_services": [
+          "frontend",
+          "checkout",
+          "payments"
+        ],
+        "evidence": [
+          "payments service error_rate spiked at 14:32 UTC with max 11.8%, coinciding with deploy v2.14.0 at 14:31 UTC",
+          "Error logs from payments service show 'context deadline exceeded acquiring connection from pool (timeout=500ms)'",
+          "The deploy v2.14.0 reduced connection pool timeout from 5000ms to 500ms, causing timeouts",
+          "Rollback of v2.14.0 at 15:45 UTC resolved the issue",
+          "Frontend and checkout services showed elevated error rates as downstream effects"
+        ],
+        "confidence": "high",
+        "confidence_reason": "The error rate spike in payments service directly correlates with the deploy of v2.14.0, and logs show a specific error message indicating connection pool timeouts. The rollback of this version at 15:45 UTC resolved the issue.",
+        "recommended_action": "Rollback the problematic deploy v2.14.0 in payments service and investigate why the timeout was reduced so drastically."
+      },
+      "grade": {
+        "root_cause_service": true,
+        "triggering_change": true,
+        "affected_recall": 1,
+        "pass": true
+      },
+      "stats": {
+        "turns": 5,
+        "input_tokens": 8665,
+        "cache_read_input_tokens": 28462,
+        "output_tokens": 1168,
+        "budget_exhausted": false,
+        "duration_ms": 53753,
+        "tool_calls": {
+          "get_deploys": 1,
+          "list_services": 1,
+          "query_logs": 2,
+          "query_metrics": 6
+        },
+        "tool_errors": 0,
+        "rejected_reports": 0
+      },
+      "trace_path": "traces/eval-20261115T204123Z/payments-pool-timeout-q5-r1.jsonl"
+    },
+    {
+      "scenario": "payments-pool-timeout",
+      "question": 5,
+      "question_text": "Investigate the elevated error rates between 14:00 and 16:00 UTC on 2026-08-23.",
+      "repeat": 2,
+      "report": {
+        "summary": "The payments service experienced elevated error rates due to a deploy (v2.14.0) that reduced the database connection pool timeout from 5000ms to 500ms, causing connection timeouts and cascading failures in checkout and frontend services.",
+        "root_cause_service": "payments",
+        "triggering_change": "v2.14.0",
+        "affected_services": [
+          "frontend",
+          "checkout",
+          "payments"
+        ],
+        "evidence": [
+          "payments service error rate peaked at 12.58% at 2026-08-23T15:18:00Z",
+          "payments service deployed v2.14.0 at 2026-08-23T14:31:00Z with connection pool timeout reduced to 500ms",
+          "payments logs show 'context deadline exceeded acquiring connection from pool (timeout=500ms, pool_size=20, in_use=20)' error starting at 14:31:45Z",
+          "checkout service error rate peaked at 16.09% at 2026-08-23T15:34:00Z and showed 'payments.Charge failed: rpc error: code = DeadlineExceeded' errors",
+          "frontend service error rate peaked at 6.15% at 2026-08-23T14:42:00Z and showed 'checkout service returned 503 Service Unavailable' errors"
+        ],
+        "confidence": "high",
+        "confidence_reason": "The error rates in payments service started at 14:32, which matches the deploy timestamp of v2.14.0. The logs show connection pool timeout errors directly correlating with the deploy. The frontend and checkout services showed elevated error rates as downstream effects.",
+        "recommended_action": "Rollback payments service to v2.13.0 or earlier, and investigate connection pool configuration to prevent future incidents."
+      },
+      "grade": {
+        "root_cause_service": true,
+        "triggering_change": true,
+        "affected_recall": 1,
+        "pass": true
+      },
+      "stats": {
+        "turns": 6,
+        "input_tokens": 9313,
+        "cache_read_input_tokens": 40056,
+        "output_tokens": 1550,
+        "budget_exhausted": false,
+        "duration_ms": 66165,
+        "tool_calls": {
+          "get_deploys": 1,
+          "list_services": 1,
+          "query_logs": 5,
+          "query_metrics": 6
+        },
+        "tool_errors": 0,
+        "rejected_reports": 0
+      },
+      "trace_path": "traces/eval-20261115T204123Z/payments-pool-timeout-q5-r2.jsonl"
+    },
+    {
+      "scenario": "payments-pool-timeout",
+      "question": 5,
+      "question_text": "Investigate the elevated error rates between 14:00 and 16:00 UTC on 2026-08-23.",
+      "repeat": 3,
+      "report": {
+        "summary": "The payments service experienced a severe error rate increase due to a deploy that reduced the database connection pool timeout from 5000ms to 500ms. This caused timeouts when acquiring connections, leading to cascading failures in checkout and frontend services.",
+        "root_cause_service": "payments",
+        "triggering_change": "v2.14.0 deploy of payments service",
+        "affected_services": [
+          "frontend",
+          "checkout",
+          "payments"
+        ],
+        "evidence": [
+          "payments service error rate spiked to 12.58% at 15:18Z, starting around 14:32Z",
+          "deploy v2.14.0 of payments service was released at 14:31Z with connection pool timeout reduced from 5000ms to 500ms",
+          "error logs in payments service show \"context deadline exceeded acquiring connection from pool (timeout=500ms, pool_size=20, in_use=20)\"",
+          "checkout service error rate spiked to 16.09% at 15:34Z, correlating with payments errors",
+          "frontend service error rate spiked to 6.15% at 14:42Z, correlating with checkout errors"
+        ],
+        "confidence": "high",
+        "confidence_reason": "The error rate spikes in payments service correlate with a deploy at 14:31Z, and logs show context deadline exceeded errors when acquiring connections from the pool. The checkout and frontend services show correlated error rate increases as downstream callers of payments.",
+        "recommended_action": "Rollback payments service to v2.13.0 or earlier, and investigate connection pool sizing and timeout configurations."
+      },
+      "grade": {
+        "root_cause_service": true,
+        "triggering_change": true,
+        "affected_recall": 1,
+        "pass": true
+      },
+      "stats": {
+        "turns": 5,
+        "input_tokens": 9095,
+        "cache_read_input_tokens": 28500,
+        "output_tokens": 1371,
+        "budget_exhausted": false,
+        "duration_ms": 59761,
+        "tool_calls": {
+          "get_deploys": 1,
+          "list_services": 1,
+          "query_logs": 4,
+          "query_metrics": 6
+        },
+        "tool_errors": 0,
+        "rejected_reports": 0
+      },
+      "trace_path": "traces/eval-20261115T204123Z/payments-pool-timeout-q5-r3.jsonl"
+    }
+  ]
+}
