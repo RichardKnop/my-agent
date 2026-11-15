@@ -263,6 +263,48 @@ func TestInvestigate_InvalidReportIsFedBackToTheModel(t *testing.T) {
 	assert.Contains(t, results[1].Content, `confidence must be one of low, medium, high (got "very")`)
 }
 
+// More than one submit_report in a response is a mistake, like an invalid
+// report: none is accepted (even valid ones), every call gets the same tool
+// error, and the model resubmits. Other tools in the response still run.
+func TestInvestigate_MultipleReportsInOneResponseAreRejected(t *testing.T) {
+	t.Parallel()
+
+	llm := &fakeLLM{replies: []fakeReply{
+		reply("tool_use",
+			submit("call_1", validReport),
+			toolUse("call_2", "list_services", `{}`),
+			submit("call_3", `{"summary": "x", "confidence": "nope"}`)),
+		reply("tool_use", submit("call_4", validReport)),
+	}}
+	a, events := newTracedTestAgent(t, llm, 8)
+
+	report, err := a.Investigate(context.Background(), "why?")
+
+	require.NoError(t, err)
+	assert.NotNil(t, report)
+	require.Len(t, llm.requests, 2, "no report was accepted on turn 1")
+
+	results := llm.requests[1].Messages[2].Content
+	require.Len(t, results, 3, "every tool_use gets a tool_result, in order")
+	for i, id := range []string{"call_1", "call_3"} {
+		r := results[i*2]
+		assert.Equal(t, id, r.ToolUseID)
+		assert.True(t, r.IsError)
+		assert.Equal(t, "invalid report: submit_report was called 2 times in one response; "+
+			"call it exactly once. None of these reports was recorded", r.Content)
+	}
+	assert.Equal(t, "call_2", results[1].ToolUseID)
+	assert.False(t, results[1].IsError, "other tools in the response still run")
+
+	var rejected int
+	for _, ev := range events() {
+		if ev["event"] == "tool_call" && ev["tool"] == submitReportToolName && ev["is_error"] == true {
+			rejected++
+		}
+	}
+	assert.Equal(t, 2, rejected, "each rejected submit_report call is traced")
+}
+
 // A valid report ends the run right away; tools requested in the same
 // response are not run, since nobody would read their results.
 func TestInvestigate_ValidReportEndsTheRunImmediately(t *testing.T) {
@@ -346,6 +388,11 @@ func TestInvestigate_FinalTurnWithoutValidReportFails(t *testing.T) {
 			name:    "invalid report",
 			final:   reply("tool_use", submit("call_2", `{"summary": "x", "confidence": "sure"}`)),
 			wantErr: "turn 2: the model submitted an invalid report on the final turn: invalid report: confidence must be",
+		},
+		{
+			name:    "two reports",
+			final:   reply("tool_use", submit("call_2", validReport), submit("call_3", validReport)),
+			wantErr: "turn 2: the model submitted an invalid report on the final turn: invalid report: submit_report was called 2 times",
 		},
 	}
 	for _, tc := range cases {

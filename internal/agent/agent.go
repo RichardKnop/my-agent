@@ -229,38 +229,47 @@ func (a *Agent) run(ctx context.Context, question string, stats *runStats) (*Rep
 
 		messages = append(messages, claude.Message{Role: "assistant", Content: resp.Content})
 
-		var toolUses []claude.ContentBlock
+		var toolUses, submits []claude.ContentBlock
 		for _, block := range resp.Content {
-			if block.Type == "tool_use" {
-				toolUses = append(toolUses, block)
+			if block.Type != "tool_use" {
+				continue
+			}
+			toolUses = append(toolUses, block)
+			if block.Name == submitReportToolName {
+				submits = append(submits, block)
 			}
 		}
 
-		// A valid report ends the run, even if the model asked for other
-		// tools in the same response: their results would go unread.
-		// Invalid reports are kept to be answered with a tool error below.
-		reportErrs := map[string]error{}
-		var firstReportErr error
-		for _, block := range toolUses {
-			if block.Name != submitReportToolName {
-				continue
-			}
-			report, err := a.checkReport(turn, block)
+		// Exactly one valid report ends the run, even if the model asked for
+		// other tools in the same response: their results would go unread.
+		// Anything else is a mistake the model can fix: reportErr answers
+		// every submit_report block in this response with a tool error.
+		var reportErr error
+		switch len(submits) {
+		case 0:
+		case 1:
+			report, err := a.checkReport(turn, submits[0])
 			if err == nil {
 				stats.budgetExhausted = final && a.cfg.MaxTurns > 1
 				return report, nil
 			}
-			reportErrs[block.ID] = err
-			if firstReportErr == nil {
-				firstReportErr = err
+			reportErr = err
+		default:
+			// Picking one (the first? the first valid one?) would be a
+			// guess at what the model meant, so none is accepted.
+			reportErr = fmt.Errorf("invalid report: submit_report was called %d times in one response; "+
+				"call it exactly once. None of these reports was recorded", len(submits))
+			for _, block := range submits {
+				a.traceReport(turn, block, reportErr)
 			}
+			a.log.reportChecked(reportErr)
 		}
 
 		if final {
 			// The model ignored the instruction to submit. Running tools or
 			// asking again would only cost turns the budget doesn't have.
-			if firstReportErr != nil {
-				return nil, fmt.Errorf("turn %d: the model submitted an invalid report on the final turn: %w", turn, firstReportErr)
+			if reportErr != nil {
+				return nil, fmt.Errorf("turn %d: the model submitted an invalid report on the final turn: %w", turn, reportErr)
 			}
 			if len(toolUses) > 0 {
 				return nil, fmt.Errorf("exceeded max turns (%d) without a report: "+
@@ -272,9 +281,9 @@ func (a *Agent) run(ctx context.Context, question string, stats *runStats) (*Rep
 
 		var next []claude.ContentBlock
 		for _, block := range toolUses {
-			if err, ok := reportErrs[block.ID]; ok {
+			if block.Name == submitReportToolName {
 				next = append(next, claude.ContentBlock{
-					Type: "tool_result", ToolUseID: block.ID, Content: err.Error(), IsError: true,
+					Type: "tool_result", ToolUseID: block.ID, Content: reportErr.Error(), IsError: true,
 				})
 				continue
 			}
@@ -299,10 +308,17 @@ func (a *Agent) run(ctx context.Context, question string, stats *runStats) (*Rep
 	return nil, fmt.Errorf("exceeded max turns (%d) without a report", a.cfg.MaxTurns)
 }
 
-// checkReport validates a submit_report call. It's traced like any other
-// tool call, so the trace shows rejected reports and what was wrong.
+// checkReport validates a submit_report call.
 func (a *Agent) checkReport(turn int, block claude.ContentBlock) (*Report, error) {
 	report, err := parseReport(block.Input)
+	a.traceReport(turn, block, err)
+	a.log.reportChecked(err)
+	return report, err
+}
+
+// traceReport records a submit_report call like any other tool call, so the
+// trace shows rejected reports and what was wrong with them.
+func (a *Agent) traceReport(turn int, block claude.ContentBlock, err error) {
 	fields := map[string]any{
 		"turn":       turn,
 		"tool":       block.Name,
@@ -314,8 +330,6 @@ func (a *Agent) checkReport(turn int, block claude.ContentBlock) (*Report, error
 		fields["error"] = err.Error()
 	}
 	a.tracer.Event("tool_call", fields)
-	a.log.reportChecked(err)
-	return report, err
 }
 
 // callTool runs one tool_use block and turns the outcome into the matching

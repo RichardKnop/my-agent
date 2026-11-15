@@ -181,6 +181,9 @@ change of model or wording. `submit_report` lives in `internal/agent`, not the t
 registry, because it isn't a view of the system but part of the loop's protocol:
 
 - a valid report ends the run (tools asked for in the same response are skipped);
+- more than one `submit_report` call in a response is rejected as a whole, even if the
+  reports are valid: every call gets the same error and the model resubmits, rather than
+  the loop guessing which report was meant;
 - an invalid report (e.g. `confidence: "very"`) goes back as an `is_error` tool_result,
   like any failing tool, and the model resubmits. The schema says the same thing, but
   servers such as Ollama don't enforce schemas, so the loop checks;
