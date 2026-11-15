@@ -323,7 +323,7 @@ leading question "Did the inventory service cause the checkout errors yesterday?
 the agent investigated only inventory, found no errors and no deploy there, and still
 answered "inventory" with high confidence, without ever looking at payments. That's
 confirmation bias, and it only shows up because one phrasing points at the wrong
-service. Three steps, each with its results committed in `evals/results/` (`-repeat 3`,
+service. Three measurements, each with its results committed in `evals/results/` (`-repeat 3`,
 18 runs):
 
 ```
@@ -334,18 +334,18 @@ service. Three steps, each with its results committed in `evals/results/` (`-rep
    * one repeat
 ```
 
-1. The playbook used the incident's own services as its examples ("if a downstream
-   service (e.g. payments) is impacted ... callers (e.g. checkout, frontend)"), and so
-   did a tool parameter. Removing them was the honest baseline: the leading question
-   still failed 2 of 3 times.
-2. The change that fixed it: the playbook now asks the agent to **survey every service
-   first**, querying error_rate for all of them in one turn of parallel tool calls, before
-   committing to an explanation; a cause suggested by the question is a hypothesis to test;
-   and the report schema says `affected_services` means every service that deviated from
-   its baseline and that high confidence needs direct evidence in the root-cause service.
-   The survey is the big lever: the agent sees payments spiking and inventory flat before it
-   chooses a path, frontend is affected on the evidence, and one parallel turn replaces
-   several sequential ones, so no run ran out of budget.
+- **1 → 2:** the playbook used the incident's own services as its examples ("if a downstream
+  service (e.g. payments) is impacted ... callers (e.g. checkout, frontend)"), and so
+  did a tool parameter. Removing them gave the honest baseline: the leading question
+  still failed 2 of 3 times.
+- **2 → 3,** the change that fixed it: the playbook now asks the agent to **survey every service
+  first**, querying error_rate for all of them in one turn of parallel tool calls, before
+  committing to an explanation; a cause suggested by the question is a hypothesis to test;
+  and the report schema says `affected_services` means every service that deviated from
+  its baseline and that high confidence needs direct evidence in the root-cause service.
+  The survey is the big lever: the agent sees payments spiking and inventory flat before it
+  chooses a path, frontend is affected on the evidence, and one parallel turn replaces
+  several sequential ones, so no run ran out of budget.
 
 The cost is visible too: each run takes longer (34s → 56s locally) and sends more new
 tokens (six metric results land in one turn), while using fewer turns. With only one
