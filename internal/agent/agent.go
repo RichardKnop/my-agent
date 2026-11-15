@@ -182,7 +182,7 @@ func (a *Agent) run(ctx context.Context, question string, stats *runStats) (*Rep
 			// All tools must still be sent: the conversation contains
 			// tool_use/tool_result blocks, which the API rejects without
 			// their definitions. This tool_choice forces submit_report.
-			req.ToolChoice = &claude.ToolChoice{Type: "tool", Name: submitReportToolName}
+			req.ToolChoice = &claude.ToolChoice{Type: "tool", Name: SubmitReportToolName}
 		}
 
 		// Size of what we're about to send — useful for watching the context
@@ -235,7 +235,7 @@ func (a *Agent) run(ctx context.Context, question string, stats *runStats) (*Rep
 				continue
 			}
 			toolUses = append(toolUses, block)
-			if block.Name == submitReportToolName {
+			if block.Name == SubmitReportToolName {
 				submits = append(submits, block)
 			}
 		}
@@ -276,12 +276,12 @@ func (a *Agent) run(ctx context.Context, question string, stats *runStats) (*Rep
 					"the model kept calling tools on the final turn", a.cfg.MaxTurns)
 			}
 			return nil, fmt.Errorf("exceeded max turns (%d) without a report: "+
-				"the model answered in plain text instead of calling %s", a.cfg.MaxTurns, submitReportToolName)
+				"the model answered in plain text instead of calling %s", a.cfg.MaxTurns, SubmitReportToolName)
 		}
 
 		var next []claude.ContentBlock
 		for _, block := range toolUses {
-			if block.Name == submitReportToolName {
+			if block.Name == SubmitReportToolName {
 				next = append(next, claude.ContentBlock{
 					Type: "tool_result", ToolUseID: block.ID, Content: reportErr.Error(), IsError: true,
 				})

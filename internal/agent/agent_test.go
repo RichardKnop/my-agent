@@ -78,7 +78,7 @@ const validReport = `{
 }`
 
 func submit(id, input string) claude.ContentBlock {
-	return toolUse(id, submitReportToolName, input)
+	return toolUse(id, SubmitReportToolName, input)
 }
 
 var testNow = time.Date(2026, 8, 24, 9, 0, 0, 0, time.UTC)
@@ -298,7 +298,7 @@ func TestInvestigate_MultipleReportsInOneResponseAreRejected(t *testing.T) {
 
 	var rejected int
 	for _, ev := range events() {
-		if ev["event"] == "tool_call" && ev["tool"] == submitReportToolName && ev["is_error"] == true {
+		if ev["event"] == "tool_call" && ev["tool"] == SubmitReportToolName && ev["is_error"] == true {
 			rejected++
 		}
 	}
@@ -324,7 +324,7 @@ func TestInvestigate_ValidReportEndsTheRunImmediately(t *testing.T) {
 	assert.Len(t, llm.requests, 1)
 	for _, ev := range events() {
 		if ev["event"] == "tool_call" {
-			assert.Equal(t, submitReportToolName, ev["tool"], "no other tool ran")
+			assert.Equal(t, SubmitReportToolName, ev["tool"], "no other tool ran")
 		}
 	}
 }
@@ -572,7 +572,7 @@ func TestInvestigate_FinalTurnForcesAReport(t *testing.T) {
 
 	assert.Nil(t, llm.requests[0].ToolChoice)
 	assert.Nil(t, llm.requests[1].ToolChoice)
-	assert.Equal(t, &claude.ToolChoice{Type: "tool", Name: submitReportToolName}, llm.requests[2].ToolChoice)
+	assert.Equal(t, &claude.ToolChoice{Type: "tool", Name: SubmitReportToolName}, llm.requests[2].ToolChoice)
 	assert.Len(t, llm.requests[2].Tools, len(llm.requests[0].Tools),
 		"all tools are still defined on the final turn: the history contains tool_use blocks")
 

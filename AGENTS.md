@@ -37,12 +37,16 @@ engineering, tracing, cost. The point is understanding, so clarity beats feature
 
 ```
 cmd/agent/          CLI entrypoint; wires client, tools, store, tracer, runs one question
+cmd/eval/           eval CLI: runs the agent over evals/ scenarios, prints a summary table
 internal/agent/     the agentic loop + system prompt (agent.go), the submit_report tool and
                     Report type (report.go), stderr narration (steplog.go)
 internal/claude/    raw-HTTP Anthropic Messages API client (also works with Ollama)
 internal/tools/     tool JSON-schema definitions + handlers, Registry for name lookup
 internal/data/      loads data/*.json into an in-memory Store
 internal/trace/     one JSONL event per LLM/tool call, written to traces/
+internal/eval/      scenario loading, report grading, trace measurements, summaries
+evals/<scenario>/   scenario.json: dataset, "now", question phrasings, expected answer
+evals/results/      eval results JSON, one file per eval run
 scripts/gen_data.py generates the mock dataset
 skills/             stage 2 placeholder
 ```
@@ -53,6 +57,7 @@ skills/             stage 2 placeholder
 python3 scripts/gen_data.py                    # reproduces the committed, pinned data/*.json
 gofmt -l . && go vet ./... && go test -race ./...   # same checks as CI
 go run ./cmd/agent -now 2026-08-24T09:00:00Z -v 2 "why did checkout error rate spike yesterday afternoon?"
+go run ./cmd/eval -base-url http://localhost:11434 -model qwen3-coder   # all scenarios, local model
 ```
 
 - Tool tests run against the real `data/*.json` and work out the incident day from
@@ -64,6 +69,10 @@ go run ./cmd/agent -now 2026-08-24T09:00:00Z -v 2 "why did checkout error rate s
 - Running the agent calls a real model: against Anthropic it needs `ANTHROPIC_API_KEY`
   and costs money, so don't run it unless asked. A local Ollama model works via
   `-base-url http://localhost:11434 -model qwen3-coder` (see README).
+- Evals run the agent once per question per repeat, so the same cost rule applies: don't
+  run them against Anthropic unless asked.
+- `evals/*/scenario.json` holds the expected answers. Nothing in it may reach the agent's
+  prompts, tool descriptions or skills; it's read only by the grader.
 - `-v 2` prints everything that enters the context window (system prompt, tool
   definitions, tool results). Use it when debugging agent behavior.
 

@@ -24,7 +24,9 @@ import (
 // stage 3); submit_report is part of the loop's own protocol: calling it ends
 // the run.
 
-const submitReportToolName = "submit_report"
+// SubmitReportToolName is exported for code that reads traces, such as the
+// eval runner, which tells report submissions apart from investigation tools.
+const SubmitReportToolName = "submit_report"
 
 // Report is the agent's final answer.
 type Report struct {
@@ -43,7 +45,7 @@ type Report struct {
 // may suggest that the cause is a deploy, or that there is a cause at all,
 // or the evals stop measuring the investigation.
 var submitReportTool = claude.Tool{
-	Name: submitReportToolName,
+	Name: SubmitReportToolName,
 	Description: "Submit your final incident report. This is the only way to answer: " +
 		"plain-text answers are not recorded. Calling it ends the investigation, so call it " +
 		"once, after gathering evidence with the other tools, and not together with them. " +
