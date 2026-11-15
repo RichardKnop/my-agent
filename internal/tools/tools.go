@@ -130,7 +130,7 @@ var queryMetricsDef = Definition{
 		"properties": map[string]any{
 			"service": map[string]any{
 				"type":        "string",
-				"description": "Service name, e.g. \"payments\". Call list_services to see valid names.",
+				"description": "Service name exactly as list_services returns it.",
 			},
 			"metric": map[string]any{
 				"type": "string",

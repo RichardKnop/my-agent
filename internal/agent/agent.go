@@ -29,9 +29,8 @@ A good investigation typically:
 3. Uses get_deploys around that time window — deploys are the most common root cause.
 4. Uses query_logs (narrowed by service, level and time range) to find the specific error
    messages that explain the mechanism, not just that something failed.
-5. Follows the dependency graph: if a downstream service (e.g. payments) is impacted, check
-   whether that explains anomalies in the services that call it (e.g. checkout, frontend),
-   rather than treating each anomaly as independent.
+5. Follows the dependency graph: if a service is impacted, check whether that explains
+   anomalies in the services that call it, rather than treating each anomaly as independent.
 
 Once you have enough evidence, STOP investigating and answer by calling submit_report. That
 call is the only way to answer: plain-text answers are not recorded. In the report, cite the
