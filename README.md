@@ -219,7 +219,10 @@ a few `sample_trace_ids`, ordered by `first_seen` so it reads as a timeline. For
 whole incident window across all services that's ~3 KB covering every line, versus
 ~8 KB of raw output covering 40 of them. `mode: "raw"` still returns individual lines
 (newest first, capped at 40), and a `trace_id` filter lets the model take a sample trace
-from a group and follow that one request across services. Both modes report totals and
+from a group and follow that one request across services. That lookup needs no
+`start`/`end`: the trace ID already names the request, and making the model guess a
+window it might miss (an empty result reads as "no logs") caused the only tool error in
+the eval runs. Every other query still requires a window. Both modes report totals and
 `truncated`, so the model knows when it's seeing a partial view and should narrow the
 query. Grouping is by exact message, which works because the mock messages are constant.
 Real logs need templating first (masking IDs, durations and counters, e.g. the Drain

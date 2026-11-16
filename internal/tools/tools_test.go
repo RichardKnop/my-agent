@@ -302,7 +302,8 @@ func TestQueryLogsRawRespectsCapAndFilters(t *testing.T) {
 }
 
 // The workflow the tool description suggests: take a sample trace_id from a
-// group, then pull that one request's lines across all services.
+// group, then pull that one request's lines across all services, with no
+// time window.
 func TestQueryLogsFollowTraceAcrossServices(t *testing.T) {
 	store := loadTestStore(t)
 	day := incidentDay(t, store)
@@ -318,8 +319,9 @@ func TestQueryLogsFollowTraceAcrossServices(t *testing.T) {
 
 	var raw rawLogsResult
 	mustCall(t, store, "query_logs", map[string]string{
-		"trace_id": traceID, "mode": "raw", "start": window["start"], "end": window["end"],
+		"trace_id": traceID, "mode": "raw",
 	}, &raw)
+	require.NotEmpty(t, raw.Entries)
 
 	services := map[string]bool{}
 	for _, e := range raw.Entries {
@@ -328,6 +330,56 @@ func TestQueryLogsFollowTraceAcrossServices(t *testing.T) {
 	}
 	assert.True(t, services["frontend"] && services["checkout"] && services["payments"],
 		"one failing request should be traceable frontend -> checkout -> payments, got %v", services)
+}
+
+func TestQueryLogsWindow(t *testing.T) {
+	store := loadTestStore(t)
+	day := incidentDay(t, store)
+	start, end := day+"T14:00:00Z", day+"T16:00:00Z"
+
+	var grouped groupedLogsResult
+	mustCall(t, store, "query_logs", map[string]string{
+		"service": "frontend", "level": "ERROR", "start": start, "end": end,
+	}, &grouped)
+	require.NotEmpty(t, grouped.Groups)
+	require.NotEmpty(t, grouped.Groups[0].SampleTraceIDs)
+	traceID := grouped.Groups[0].SampleTraceIDs[0]
+
+	t.Run("trace_id with a window still filters by it", func(t *testing.T) {
+		var raw rawLogsResult
+		mustCall(t, store, "query_logs", map[string]string{
+			"trace_id": traceID, "mode": "raw", "start": day + "T00:00:00Z", "end": day + "T00:00:01Z",
+		}, &raw)
+		assert.Empty(t, raw.Entries)
+	})
+
+	tests := []struct {
+		name    string
+		args    map[string]string
+		wantErr string
+	}{
+		{
+			name:    "no trace_id needs a window",
+			args:    map[string]string{"service": "frontend"},
+			wantErr: "start is required: an RFC3339 timestamp like \"2026-01-31T14:00:00Z\" (start and end may be omitted only when trace_id is given)",
+		},
+		{
+			name:    "trace_id with half a window",
+			args:    map[string]string{"trace_id": traceID, "start": start},
+			wantErr: "end is required: an RFC3339 timestamp like \"2026-01-31T14:00:00Z\" (or omit both start and end to search the whole trace)",
+		},
+		{
+			name:    "trace_id with a malformed window",
+			args:    map[string]string{"trace_id": traceID, "start": "yesterday", "end": end},
+			wantErr: `invalid start "yesterday": must be an RFC3339 timestamp like "2026-01-31T14:00:00Z"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := call(t, store, "query_logs", tt.args)
+			assert.EqualError(t, err, tt.wantErr)
+		})
+	}
 }
 
 func TestQueryLogsUnknownModeErrors(t *testing.T) {
