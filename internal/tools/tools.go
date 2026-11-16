@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -278,6 +279,11 @@ func round2(f float64) float64 {
 // "raw" returns individual lines, newest first, for when the model needs
 // them, typically to follow one request across services with trace_id.
 //
+// A trace_id lookup doesn't need a time window: the ID already names one
+// request, and a request's lines span a second or two. Requiring start/end
+// there only makes the model guess a window, and a guess that misses the
+// request returns nothing, which reads as "this request left no logs".
+//
 // Grouping is by exact message. Real logs embed variable parts (request IDs,
 // durations, counters), so production systems first turn messages into
 // templates by masking those parts (e.g. the Drain algorithm). Our mock
@@ -294,14 +300,15 @@ var queryLogsDef = Definition{
 	Name: "query_logs",
 	Description: fmt.Sprintf(
 		"Search log lines within a time window, optionally filtered by service, level, trace_id "+
-			"and a substring match on the message.\n\n"+
+			"and a substring match on the message. start and end are required, except when "+
+			"trace_id is given: then they may be omitted to search every line of that request.\n\n"+
 			"By default (mode \"grouped\") identical lines are collapsed into one group per "+
 			"(service, level, message), with the number of occurrences, the first_seen and last_seen "+
 			"timestamps, and up to %d sample trace_ids. Groups are ordered by first_seen, so they read "+
 			"as a timeline of when each kind of message started. At most %d groups are returned.\n\n"+
 			"Use mode \"raw\" to get individual lines instead (most recent first, at most %d). "+
 			"To follow one request across services, take a trace_id from a group's sample_trace_ids "+
-			"and query with mode \"raw\" and that trace_id, without a service filter.\n\n"+
+			"and query with mode \"raw\" and that trace_id, without a service filter or time window.\n\n"+
 			"If the result says truncated, narrow the time window or add filters.",
 		maxSampleTraceIDs, maxLogGroups, maxLogResults),
 	InputSchema: map[string]any{
@@ -328,11 +335,23 @@ var queryLogsDef = Definition{
 				"enum":        []string{logModeGrouped, logModeRaw},
 				"description": "\"grouped\" (default) collapses identical lines with counts; \"raw\" returns individual lines.",
 			},
-			"start": startSchema,
-			"end":   endSchema,
+			"start": optionalWindowSchema(startSchema),
+			"end":   optionalWindowSchema(endSchema),
 		},
-		"required": []string{"start", "end"},
+		// start and end are required unless trace_id is given. JSON Schema
+		// can express that only with if/then, which models follow less
+		// reliably than a sentence, so queryLogs enforces it and the
+		// descriptions say it.
+		"required": []string{},
 	},
+}
+
+// optionalWindowSchema copies a start/end schema with a note that a
+// trace_id lookup may omit it.
+func optionalWindowSchema(base map[string]any) map[string]any {
+	s := maps.Clone(base)
+	s["description"] = base["description"].(string) + " Required unless trace_id is given."
+	return s
 }
 
 type logsArgs struct {
@@ -361,9 +380,22 @@ func queryLogs(store *data.Store, input json.RawMessage) (string, error) {
 	if err := json.Unmarshal(input, &a); err != nil {
 		return "", fmt.Errorf("bad input: %w", err)
 	}
-	var err error
-	if a.Start, a.End, err = parseWindow(a.Start, a.End); err != nil {
-		return "", err
+	// With a trace_id and no window, search all lines (empty Start/End
+	// mean unbounded in filterLogs). Any window given is still validated,
+	// so a malformed one is an error rather than silently ignored.
+	if a.TraceID == "" || a.Start != "" || a.End != "" {
+		start, end, err := parseWindow(a.Start, a.End)
+		if err != nil {
+			if a.Start == "" || a.End == "" {
+				if a.TraceID == "" {
+					err = fmt.Errorf("%w (start and end may be omitted only when trace_id is given)", err)
+				} else {
+					err = fmt.Errorf("%w (or omit both start and end to search the whole trace)", err)
+				}
+			}
+			return "", err
+		}
+		a.Start, a.End = start, end
 	}
 	if a.Mode == "" {
 		a.Mode = logModeGrouped
@@ -410,7 +442,7 @@ func filterLogs(logs []data.LogEntry, a logsArgs) []data.LogEntry {
 	contains := strings.ToLower(a.Contains)
 	var matched []data.LogEntry
 	for _, l := range logs {
-		if !inRange(l.TS, a.Start, a.End) {
+		if a.Start != "" && !inRange(l.TS, a.Start, a.End) {
 			continue
 		}
 		if a.Service != "" && l.Service != a.Service {
