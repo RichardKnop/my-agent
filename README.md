@@ -191,7 +191,15 @@ registry, because it isn't a view of the system but part of the loop's protocol:
   like any failing tool, and the model resubmits. The schema says the same thing, but
   servers such as Ollama don't enforce schemas, so the loop checks;
 - a plain-text reply is not accepted as an answer: the loop replies with a reminder to
-  use `submit_report`, which costs a turn. Models trained to "just answer" do this.
+  use `submit_report`, which costs a turn. Models trained to "just answer" do this;
+- a tool call *written as text* gets a different note. A model writes every tool call
+  as text in the format it was trained on, and the server parses that into a `tool_use`
+  block. When the format is slightly off (qwen3-coder sometimes leaves out the opening
+  `<tool_call>` tag), Ollama returns the call as plain text and nothing runs. The model
+  thinks it called the tool, so the reminder above makes no sense to it, and in the
+  traced failures it went on to invent services it never saw. The loop spots the syntax
+  (`<function=`, `<tool_call>`, `<invoke `) and says the call didn't run and returned
+  nothing.
 
 The field descriptions are prompt text, so they're written not to hint at the answer:
 `triggering_change` and `root_cause_service` may be empty, so "no deploy did it" and "no
@@ -277,7 +285,8 @@ Each run writes `traces/run-<UTC timestamp>.jsonl`. Example lines:
 
 `llm_response` also has a `text` field with whatever the model wrote outside tool calls,
 omitted when it wrote none. Without it, a run that answers in prose every turn shows up as
-token counts only: you can see that it failed but not why.
+token counts only: you can see that it failed but not why. A response whose text holds a
+tool call the server didn't parse is marked `"text_tool_call": true`.
 
 `submit_report` calls are traced as `tool_call` events like any other tool; a rejected
 report has `is_error: true` and an `error` field saying what was wrong. Every run ends with
@@ -322,7 +331,7 @@ Every question is a full, independent agent run (asked `-repeat` times), and eac
   as the share of expected services named (missing a downstream service is a weaker
   answer, not a wrong one), and naming a healthy control service is recorded separately;
 - **measured from its trace**: turns, tokens, duration, tool calls and tool errors,
-  rejected reports, and whether the budget ran out. A change that keeps the pass rate but
+  rejected reports, tool calls written as text, and whether the budget ran out. A change that keeps the pass rate but
   doubles the turns is still a regression, and reading the trace (rather than the agent's
   internal counters) means evals depend only on the record a production pipeline would see.
 

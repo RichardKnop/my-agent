@@ -27,6 +27,7 @@ type Summary struct {
 	BudgetExhausted int     `json:"budget_exhausted"`
 	RejectedReports int     `json:"rejected_reports"`
 	ToolErrors      int     `json:"tool_errors"`
+	TextToolCalls   int     `json:"text_tool_calls"`
 	AvgTurns        float64 `json:"avg_turns"`
 	AvgInputTokens  float64 `json:"avg_input_tokens"`
 	AvgCacheTokens  float64 `json:"avg_cache_read_input_tokens"`
@@ -62,6 +63,7 @@ func Summarize(name string, runs []RunResult) Summary {
 		s.AffectedRecall += r.Grade.AffectedRecall
 		s.RejectedReports += r.Stats.RejectedReports
 		s.ToolErrors += r.Stats.ToolErrors
+		s.TextToolCalls += r.Stats.TextToolCalls
 		s.AvgTurns += float64(r.Stats.Turns)
 		s.AvgInputTokens += float64(r.Stats.InputTokens)
 		s.AvgCacheTokens += float64(r.Stats.CacheReadTokens)
@@ -109,11 +111,11 @@ func (r *Results) Write(path string) error {
 // WriteTable prints summaries as an aligned table.
 func WriteTable(w io.Writer, sums []Summary) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', tabwriter.AlignRight)
-	fmt.Fprintln(tw, "scenario\tpass\troot cause\tchange\taffected\terrors\tbudget out\trejected\ttool errs\tturns\ttokens in/cached/out\ttime\t")
+	fmt.Fprintln(tw, "scenario\tpass\troot cause\tchange\taffected\terrors\tbudget out\trejected\ttool errs\ttext calls\tturns\ttokens in/cached/out\ttime\t")
 	for _, s := range sums {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%.0f%%\t%d\t%d\t%d\t%d\t%.1f\t%s/%s/%s\t%.0fs\t\n",
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%.0f%%\t%d\t%d\t%d\t%d\t%d\t%.1f\t%s/%s/%s\t%.0fs\t\n",
 			s.Scenario, frac(s.Passed, s.Runs), frac(s.RootCauseService, s.Runs), frac(s.TriggeringChange, s.Runs),
-			s.AffectedRecall*100, s.Errors, s.BudgetExhausted, s.RejectedReports, s.ToolErrors,
+			s.AffectedRecall*100, s.Errors, s.BudgetExhausted, s.RejectedReports, s.ToolErrors, s.TextToolCalls,
 			s.AvgTurns, kilo(s.AvgInputTokens), kilo(s.AvgCacheTokens), kilo(s.AvgOutputTokens), s.AvgDurationMS/1000)
 	}
 	return tw.Flush()
