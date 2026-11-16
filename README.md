@@ -275,6 +275,10 @@ Each run writes `traces/run-<UTC timestamp>.jsonl`. Example lines:
 {"ts":"...","elapsed_ms":9800,"event":"run_end","turns":4,"total_input_tokens":3100,"total_cache_read_input_tokens":0,"total_output_tokens":410,"budget_exhausted":false,"report":{"summary":"...","root_cause_service":"...",...}}
 ```
 
+`llm_response` also has a `text` field with whatever the model wrote outside tool calls,
+omitted when it wrote none. Without it, a run that answers in prose every turn shows up as
+token counts only: you can see that it failed but not why.
+
 `submit_report` calls are traced as `tool_call` events like any other tool; a rejected
 report has `is_error: true` and an `error` field saying what was wrong. Every run ends with
 exactly one `run_end` line, however it ends. A successful run's `run_end` carries the

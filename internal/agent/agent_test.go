@@ -353,6 +353,31 @@ func TestInvestigate_PlainTextReplyGetsAReminder(t *testing.T) {
 	assert.Equal(t, []claude.ContentBlock{textBlock(submitReminder)}, msgs[2].Content)
 }
 
+// The response text goes into the trace, so a run that only ever answers in
+// prose can be diagnosed afterwards. Tool-only responses carry no text field.
+func TestInvestigate_TraceRecordsResponseText(t *testing.T) {
+	t.Parallel()
+
+	llm := &fakeLLM{replies: []fakeReply{
+		reply("end_turn", textBlock("Root cause: payments."), textBlock("Done.")),
+		reply("tool_use", submit("call_1", validReport)),
+	}}
+	a, events := newTracedTestAgent(t, llm, 8)
+
+	_, err := a.Investigate(context.Background(), "why?")
+	require.NoError(t, err)
+
+	var responses []map[string]any
+	for _, ev := range events() {
+		if ev["event"] == "llm_response" {
+			responses = append(responses, ev)
+		}
+	}
+	require.Len(t, responses, 2)
+	assert.Equal(t, "Root cause: payments.\nDone.", responses[0]["text"])
+	assert.NotContains(t, responses[1], "text")
+}
+
 func TestInvestigate_StopsAtMaxTurns(t *testing.T) {
 	t.Parallel()
 
