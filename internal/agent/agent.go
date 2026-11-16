@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/richardknop/my-agent/internal/claude"
@@ -214,7 +215,7 @@ func (a *Agent) run(ctx context.Context, question string, stats *runStats) (*Rep
 		stats.inputTokens += resp.Usage.InputTokens
 		stats.cacheReadTokens += resp.Usage.CacheReadInputTokens
 		stats.outputTokens += resp.Usage.OutputTokens
-		a.tracer.Event("llm_response", map[string]any{
+		ev := map[string]any{
 			"turn":                    turn,
 			"latency_ms":              latency.Milliseconds(),
 			"stop_reason":             resp.StopReason,
@@ -222,7 +223,17 @@ func (a *Agent) run(ctx context.Context, question string, stats *runStats) (*Rep
 			"cache_read_input_tokens": resp.Usage.CacheReadInputTokens,
 			"output_tokens":           resp.Usage.OutputTokens,
 			"request_bytes":           len(payload),
-		})
+		}
+		// What the model said, not just what it cost. Tool calls are traced
+		// as their own events, but without the text a run that never calls
+		// a tool is a row of token counts: you can see that it failed, not
+		// why (ignoring instructions? a tool call written in a format the
+		// server didn't parse?). Output is bounded by max_tokens, so it's
+		// recorded in full, like tool inputs.
+		if text := responseText(resp.Content); text != "" {
+			ev["text"] = text
+		}
+		a.tracer.Event("llm_response", ev)
 
 		if resp.StopReason == "max_tokens" {
 			// The response was cut off mid-sentence (or mid tool call).
@@ -398,4 +409,15 @@ func toAPITools(defs []tools.Definition) []claude.Tool {
 		out[i] = claude.Tool{Name: d.Name, Description: d.Description, InputSchema: d.InputSchema}
 	}
 	return out
+}
+
+// responseText joins the text blocks of a response, in order.
+func responseText(blocks []claude.ContentBlock) string {
+	var parts []string
+	for _, b := range blocks {
+		if b.Type == "text" && b.Text != "" {
+			parts = append(parts, b.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
