@@ -84,6 +84,19 @@ const submitReminder = "[agent harness] Your reply was not recorded as an answer
 	"accepted through the submit_report tool. If you have finished investigating, call " +
 	"submit_report now; otherwise continue the investigation."
 
+// textToolCallNote answers a tool call the model wrote as text instead of
+// making it. Every model writes tool calls as text in a format it was trained
+// on, and the server parses that into tool_use blocks; when the model gets
+// the format slightly wrong (qwen3-coder sometimes drops the opening
+// <tool_call> tag), the server returns it as plain text and nothing runs.
+// The model believes it called the tool, so submitReminder ("you answered in
+// text") makes no sense to it, and it goes on to reason from results it
+// never received. This note says what actually happened.
+const textToolCallNote = "[agent harness] Your last reply contained a tool call written as text " +
+	"(e.g. <function=...>), so it was not executed: no tool ran and you have no results from it. " +
+	"Do not assume any data from it. Make tool calls through the tool-calling interface, " +
+	"not by writing them into your reply."
+
 type Config struct {
 	Model     string
 	MaxTokens int
@@ -230,8 +243,27 @@ func (a *Agent) run(ctx context.Context, question string, stats *runStats) (*Rep
 		// why (ignoring instructions? a tool call written in a format the
 		// server didn't parse?). Output is bounded by max_tokens, so it's
 		// recorded in full, like tool inputs.
-		if text := responseText(resp.Content); text != "" {
+		text := responseText(resp.Content)
+		if text != "" {
 			ev["text"] = text
+		}
+
+		var toolUses, submits []claude.ContentBlock
+		for _, block := range resp.Content {
+			if block.Type != "tool_use" {
+				continue
+			}
+			toolUses = append(toolUses, block)
+			if block.Name == SubmitReportToolName {
+				submits = append(submits, block)
+			}
+		}
+		// textToolCall is a tool call the model wrote as text that the
+		// server didn't parse into a tool_use block. Traced so evals can
+		// count how often it happens and whether runs recover.
+		textToolCall := len(toolUses) == 0 && looksLikeTextToolCall(text)
+		if textToolCall {
+			ev["text_tool_call"] = true
 		}
 		a.tracer.Event("llm_response", ev)
 
@@ -244,17 +276,6 @@ func (a *Agent) run(ctx context.Context, question string, stats *runStats) (*Rep
 		}
 
 		messages = append(messages, claude.Message{Role: "assistant", Content: resp.Content})
-
-		var toolUses, submits []claude.ContentBlock
-		for _, block := range resp.Content {
-			if block.Type != "tool_use" {
-				continue
-			}
-			toolUses = append(toolUses, block)
-			if block.Name == SubmitReportToolName {
-				submits = append(submits, block)
-			}
-		}
 
 		// Exactly one valid report ends the run, even if the model asked for
 		// other tools in the same response: their results would go unread.
@@ -291,6 +312,10 @@ func (a *Agent) run(ctx context.Context, question string, stats *runStats) (*Rep
 				return nil, fmt.Errorf("exceeded max turns (%d) without a report: "+
 					"the model kept calling tools on the final turn", a.cfg.MaxTurns)
 			}
+			if textToolCall {
+				return nil, fmt.Errorf("exceeded max turns (%d) without a report: "+
+					"the model wrote a tool call as text on the final turn", a.cfg.MaxTurns)
+			}
 			return nil, fmt.Errorf("exceeded max turns (%d) without a report: "+
 				"the model answered in plain text instead of calling %s", a.cfg.MaxTurns, SubmitReportToolName)
 		}
@@ -305,7 +330,11 @@ func (a *Agent) run(ctx context.Context, question string, stats *runStats) (*Rep
 			}
 			next = append(next, a.callTool(ctx, turn, block))
 		}
-		if len(toolUses) == 0 {
+		switch {
+		case textToolCall:
+			next = append(next, claude.ContentBlock{Type: "text", Text: textToolCallNote})
+			a.log.textToolCallNote()
+		case len(toolUses) == 0:
 			next = append(next, claude.ContentBlock{Type: "text", Text: submitReminder})
 			a.log.submitReminder()
 		}
@@ -420,4 +449,22 @@ func responseText(blocks []claude.ContentBlock) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+// textToolCallMarkers are fragments of tool-call syntaxes models are trained
+// on, as they appear when the server fails to parse them: Qwen's
+// <tool_call>/<function=...> and the <invoke ...> form other models use. A
+// heuristic, but a false positive only costs a note that the model can see
+// doesn't apply.
+var textToolCallMarkers = []string{"<tool_call>", "</tool_call>", "<function=", "<invoke "}
+
+// looksLikeTextToolCall reports whether text contains a tool call written as
+// text rather than made through the API.
+func looksLikeTextToolCall(text string) bool {
+	for _, m := range textToolCallMarkers {
+		if strings.Contains(text, m) {
+			return true
+		}
+	}
+	return false
 }

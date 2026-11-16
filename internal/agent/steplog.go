@@ -141,6 +141,13 @@ func (l *stepLog) submitReminder() {
 	l.printf("→ no report submitted: added a reminder that answers go through submit_report\n")
 }
 
+func (l *stepLog) textToolCallNote() {
+	if !l.on(1) {
+		return
+	}
+	l.printf("→ reply contains a tool call written as text, which did not run: added a note saying so\n")
+}
+
 func (l *stepLog) finalTurnNote() {
 	if !l.on(1) {
 		return

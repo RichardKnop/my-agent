@@ -284,6 +284,8 @@ func TestReadTrace(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "run.jsonl")
 	lines := `{"event":"run_start","elapsed_ms":0}
+{"event":"llm_response","text":"<function=query_logs>","text_tool_call":true}
+{"event":"llm_response"}
 {"event":"tool_call","tool":"query_logs","is_error":false}
 {"event":"tool_call","tool":"query_logs","is_error":true}
 {"event":"tool_call","tool":"get_deploys","is_error":false}
@@ -302,6 +304,7 @@ func TestReadTrace(t *testing.T) {
 		ToolCalls:       map[string]int{"query_logs": 2, "get_deploys": 1},
 		ToolErrors:      1,
 		RejectedReports: 1,
+		TextToolCalls:   1,
 	}, stats)
 }
 

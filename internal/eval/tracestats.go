@@ -29,6 +29,9 @@ type RunStats struct {
 	// RejectedReports counts submit_report calls the loop sent back as
 	// invalid. Each one cost a turn.
 	RejectedReports int `json:"rejected_reports"`
+	// TextToolCalls counts responses where the model wrote a tool call as
+	// text that the server didn't parse, so nothing ran.
+	TextToolCalls int `json:"text_tool_calls"`
 	// ModelError is set when the run failed because the model API call
 	// failed (after the client's retries): an infrastructure problem, not
 	// something the agent got wrong.
@@ -57,6 +60,8 @@ func ReadTrace(path string) (RunStats, error) {
 			// tool_call
 			Tool    string `json:"tool"`
 			IsError bool   `json:"is_error"`
+			// llm_response
+			TextToolCall bool `json:"text_tool_call"`
 			// run_end
 			Turns           int  `json:"turns"`
 			InputTokens     int  `json:"total_input_tokens"`
@@ -78,6 +83,10 @@ func ReadTrace(path string) (RunStats, error) {
 			stats.ToolCalls[ev.Tool]++
 			if ev.IsError {
 				stats.ToolErrors++
+			}
+		case "llm_response":
+			if ev.TextToolCall {
+				stats.TextToolCalls++
 			}
 		case "llm_error":
 			stats.ModelError = true

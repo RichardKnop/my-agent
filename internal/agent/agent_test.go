@@ -378,6 +378,53 @@ func TestInvestigate_TraceRecordsResponseText(t *testing.T) {
 	assert.NotContains(t, responses[1], "text")
 }
 
+// A tool call the model wrote as text (the server didn't parse it) gets a
+// note saying it didn't run, not the "answer through submit_report"
+// reminder, which would make no sense to a model that thinks it called a
+// tool. The trace marks the response so evals can count these.
+func TestInvestigate_TextToolCallGetsANote(t *testing.T) {
+	t.Parallel()
+
+	written := "Let me list the services.\n\n<function=list_services>\n</function>\n</tool_call>"
+	llm := &fakeLLM{replies: []fakeReply{
+		reply("end_turn", textBlock(written)),
+		reply("tool_use", submit("call_1", validReport)),
+	}}
+	a, events := newTracedTestAgent(t, llm, 8)
+
+	_, err := a.Investigate(context.Background(), "why?")
+	require.NoError(t, err)
+
+	require.Len(t, llm.requests, 2)
+	msgs := llm.requests[1].Messages
+	require.Len(t, msgs, 3)
+	assert.Equal(t, []claude.ContentBlock{textBlock(textToolCallNote)}, msgs[2].Content)
+
+	var responses []map[string]any
+	for _, ev := range events() {
+		if ev["event"] == "llm_response" {
+			responses = append(responses, ev)
+		}
+	}
+	require.Len(t, responses, 2)
+	assert.Equal(t, true, responses[0]["text_tool_call"])
+	assert.NotContains(t, responses[1], "text_tool_call")
+}
+
+func TestLooksLikeTextToolCall(t *testing.T) {
+	t.Parallel()
+
+	for text, want := range map[string]bool{
+		"<function=list_services>\n</function>\n</tool_call>":               true,
+		`<tool_call>{"name": "list_services", "arguments": {}}</tool_call>`: true,
+		`<invoke name="list_services"></invoke>`:                            true,
+		"Root cause: the payments deploy.":                                  false,
+		"":                                                                  false,
+	} {
+		assert.Equal(t, want, looksLikeTextToolCall(text), text)
+	}
+}
+
 func TestInvestigate_StopsAtMaxTurns(t *testing.T) {
 	t.Parallel()
 
@@ -408,6 +455,11 @@ func TestInvestigate_FinalTurnWithoutValidReportFails(t *testing.T) {
 			name:    "plain text",
 			final:   reply("end_turn", textBlock("Root cause: payments.")),
 			wantErr: "exceeded max turns (2) without a report: the model answered in plain text instead of calling submit_report",
+		},
+		{
+			name:    "tool call written as text",
+			final:   reply("end_turn", textBlock("<function=submit_report>\n</function>\n</tool_call>")),
+			wantErr: "exceeded max turns (2) without a report: the model wrote a tool call as text on the final turn",
 		},
 		{
 			name:    "invalid report",
