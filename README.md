@@ -308,10 +308,13 @@ Every question is a full, independent agent run (asked `-repeat` times), and eac
 - **graded on its structured report**, with no phrase matching and no grader model.
   `root_cause_service` must equal the expected service. `triggering_change` is free text
   ("v2.14.0", "payments deploy v2.14.0"), so it must *contain* the expected version and
-  refer to the expected service: if it names a service, the right one must be among
-  them, and a bare version falls back to `root_cause_service`. A version alone could
-  belong to another service, and the service that changed isn't always the one that
-  failed. Those two checks decide pass/fail. `affected_services` is scored
+  refer to the expected service. The scenario's deploy history settles which: if the text
+  names services that deploy, the right one must be among them ("checkout v2.14.0"
+  fails), while a service that never deploys is context, not attribution ("v2.14.0
+  reducing the payments-db pool timeout" passes). A bare version passes if exactly one
+  service shipped it, and otherwise falls back to `root_cause_service`. The service that
+  changed isn't always the one that failed, so both are checked. Those two checks decide
+  pass/fail. `affected_services` is scored
   as the share of expected services named (missing a downstream service is a weaker
   answer, not a wrong one), and naming a healthy control service is recorded separately;
 - **measured from its trace**: turns, tokens, duration, tool calls and tool errors,
