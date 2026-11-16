@@ -108,7 +108,7 @@ func (r *Runner) runOne(ctx context.Context, sc Scenario, store *data.Store, now
 	}
 
 	res.Report = report
-	res.Grade = GradeReport(sc.Expect, serviceNames(store), report)
+	res.Grade = GradeReport(sc.Expect, store.Deploys, report)
 	if runErr != nil {
 		res.Error = runErr.Error()
 	}
@@ -118,14 +118,6 @@ func (r *Runner) runOne(ctx context.Context, sc Scenario, store *data.Store, now
 	}
 	res.Stats = stats
 	return res
-}
-
-func serviceNames(store *data.Store) []string {
-	names := make([]string, len(store.Services))
-	for i, s := range store.Services {
-		names[i] = s.Name
-	}
-	return names
 }
 
 func joinErr(a, b string) string {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/richardknop/my-agent/internal/agent"
 	"github.com/richardknop/my-agent/internal/claude"
+	"github.com/richardknop/my-agent/internal/data"
 )
 
 var payments = Expect{
@@ -27,10 +28,11 @@ func TestGradeReport(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name   string
-		expect Expect
-		report *agent.Report
-		want   Grade
+		name    string
+		expect  Expect
+		deploys []data.Deploy // testDeploys if nil
+		report  *agent.Report
+		want    Grade
 	}{
 		{
 			name:   "exact answer",
@@ -60,10 +62,26 @@ func TestGradeReport(t *testing.T) {
 			want:   Grade{RootCauseService: true, TriggeringChange: true, Pass: true},
 		},
 		{
-			name:   "bare version with the wrong root-cause service",
+			// Only payments shipped v2.14.0, so the version alone names the
+			// right deploy; the wrong root cause is graded separately.
+			name:   "bare version names the deploy even with the wrong root-cause service",
 			expect: payments,
 			report: &agent.Report{RootCauseService: "checkout", TriggeringChange: "v2.14.0"},
-			want:   Grade{},
+			want:   Grade{TriggeringChange: true},
+		},
+		{
+			name:    "shared version number: root_cause_service says which service",
+			expect:  payments,
+			deploys: sharedVersionDeploys,
+			report:  &agent.Report{RootCauseService: "payments", TriggeringChange: "v2.14.0"},
+			want:    Grade{RootCauseService: true, TriggeringChange: true, Pass: true},
+		},
+		{
+			name:    "shared version number with the wrong root-cause service",
+			expect:  payments,
+			deploys: sharedVersionDeploys,
+			report:  &agent.Report{RootCauseService: "checkout", TriggeringChange: "v2.14.0"},
+			want:    Grade{},
 		},
 		{
 			name:   "right version attributed to another service",
@@ -72,10 +90,20 @@ func TestGradeReport(t *testing.T) {
 			want:   Grade{RootCauseService: true},
 		},
 		{
-			name:   "payments-db is not payments",
+			// From a real eval run: payments-db never deploys, so naming it
+			// describes what the change did, not who shipped it.
+			name:   "a service the change configured is context, not attribution",
 			expect: payments,
-			report: &agent.Report{RootCauseService: "payments", TriggeringChange: "payments-db v2.14.0 migration"},
-			want:   Grade{RootCauseService: true},
+			report: &agent.Report{RootCauseService: "payments",
+				TriggeringChange: "v2.14.0 deployment reducing payments-db connection pool timeout from 5000ms to 500ms"},
+			want: Grade{RootCauseService: true, TriggeringChange: true, Pass: true},
+		},
+		{
+			name:    "payments-db is not payments when it deploys too",
+			expect:  payments,
+			deploys: append([]data.Deploy{{Service: "payments-db", Version: "v9.0.0"}}, testDeploys...),
+			report:  &agent.Report{RootCauseService: "payments", TriggeringChange: "payments-db v2.14.0 migration"},
+			want:    Grade{RootCauseService: true},
 		},
 		{
 			name:   "singular service name, other services mentioned too",
@@ -126,7 +154,11 @@ func TestGradeReport(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := GradeReport(tc.expect, testServices, tc.report)
+			deploys := tc.deploys
+			if deploys == nil {
+				deploys = testDeploys
+			}
+			got := GradeReport(tc.expect, deploys, tc.report)
 			assert.InDelta(t, tc.want.AffectedRecall, got.AffectedRecall, 1e-9)
 			got.AffectedRecall = tc.want.AffectedRecall
 			assert.Equal(t, tc.want, got)
@@ -134,7 +166,17 @@ func TestGradeReport(t *testing.T) {
 	}
 }
 
-var testServices = []string{"frontend", "checkout", "payments", "payments-db", "inventory", "inventory-db"}
+// testDeploys mirrors the committed dataset's deploy history.
+var testDeploys = []data.Deploy{
+	{Service: "checkout", Version: "v4.2.0"},
+	{Service: "payments", Version: "v2.13.2"},
+	{Service: "payments", Version: "v2.14.0"},
+	{Service: "payments", Version: "v2.14.1"},
+}
+
+// sharedVersionDeploys has two services that shipped the same version
+// number, so the version alone doesn't say which deploy is meant.
+var sharedVersionDeploys = append([]data.Deploy{{Service: "checkout", Version: "v2.14.0"}}, testDeploys...)
 
 // writeScenario creates a scenario directory with an empty data directory.
 func writeScenario(t *testing.T, root, name, scenarioJSON string) string {

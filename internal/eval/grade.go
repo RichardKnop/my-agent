@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/richardknop/my-agent/internal/agent"
+	"github.com/richardknop/my-agent/internal/data"
 )
 
 // Grade is how one report scored against a scenario's expected answer.
@@ -22,17 +23,17 @@ type Grade struct {
 	Pass bool `json:"pass"`
 }
 
-// GradeReport compares a report with the expected answer. services are all
-// the service names in the scenario's dataset, used to tell which service a
-// free-text triggering_change refers to. A nil report (the run failed) gets
-// a zero Grade.
-func GradeReport(exp Expect, services []string, r *agent.Report) Grade {
+// GradeReport compares a report with the expected answer. deploys is the
+// scenario's deploy history, used to tell which service a free-text
+// triggering_change refers to. A nil report (the run failed) gets a zero
+// Grade.
+func GradeReport(exp Expect, deploys []data.Deploy, r *agent.Report) Grade {
 	if r == nil {
 		return Grade{}
 	}
 	var g Grade
 	g.RootCauseService = strings.EqualFold(strings.TrimSpace(r.RootCauseService), exp.RootCauseService)
-	g.TriggeringChange = gradeChange(exp.TriggeringChange, services, r)
+	g.TriggeringChange = gradeChange(exp.TriggeringChange, deploys, r)
 
 	named := map[string]bool{}
 	for _, s := range r.AffectedServices {
@@ -60,29 +61,50 @@ func GradeReport(exp Expect, services []string, r *agent.Report) Grade {
 }
 
 // gradeChange checks triggering_change, which models write freely:
-// "v2.14.0", "payments v2.14.0", "v2.14.0 deploy to the payment service".
-// It must contain the expected version, and refer to the expected service:
-// if it names any service, the expected one must be among them; if it names
-// none ("v2.14.0"), the report's root_cause_service stands in for it.
-func gradeChange(exp *Change, services []string, r *agent.Report) bool {
+// "v2.14.0", "payments v2.14.0", "v2.14.0 deploy to the payment service",
+// "v2.14.0 deployment reducing payments-db connection pool timeout". It must
+// contain the expected version, and refer to the expected service:
+//
+//   - If it names services that deploy (any service in the deploy history),
+//     the expected one must be among them, so "checkout v2.14.0" fails.
+//     Services that never deploy, like a database the change configured,
+//     are context, not attribution.
+//   - If it names none, the version stands for the deploy when exactly one
+//     service shipped it. Otherwise (no such deploy, or the version number
+//     is shared) the report's root_cause_service stands in for the service.
+func gradeChange(exp *Change, deploys []data.Deploy, r *agent.Report) bool {
 	text := strings.ToLower(strings.TrimSpace(r.TriggeringChange))
 	if exp == nil {
 		return text == ""
 	}
-	if !strings.Contains(text, strings.ToLower(exp.Version)) {
+	version := strings.ToLower(exp.Version)
+	if !strings.Contains(text, version) {
 		return false
 	}
-	named := namedServices(text, services)
-	if len(named) == 0 {
-		return strings.EqualFold(strings.TrimSpace(r.RootCauseService), exp.Service)
+
+	deployed := map[string]bool{} // services that deploy
+	shipped := map[string]bool{}  // services that shipped the expected version
+	for _, d := range deploys {
+		svc := strings.ToLower(d.Service)
+		deployed[svc] = true
+		if strings.ToLower(d.Version) == version {
+			shipped[svc] = true
+		}
 	}
-	return named[strings.ToLower(exp.Service)]
+
+	if named := namedServices(text, deployed); len(named) > 0 {
+		return named[strings.ToLower(exp.Service)]
+	}
+	if len(shipped) == 1 {
+		return shipped[strings.ToLower(exp.Service)]
+	}
+	return strings.EqualFold(strings.TrimSpace(r.RootCauseService), exp.Service)
 }
 
 // namedServices returns the services mentioned in text, matched as whole
 // words and ignoring a trailing "s", so "payment service" names payments but
 // "payments-db" names only payments-db.
-func namedServices(text string, services []string) map[string]bool {
+func namedServices(text string, services map[string]bool) map[string]bool {
 	words := map[string]bool{}
 	for _, w := range strings.FieldsFunc(text, func(r rune) bool {
 		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-')
@@ -90,8 +112,7 @@ func namedServices(text string, services []string) map[string]bool {
 		words[strings.TrimSuffix(w, "s")] = true
 	}
 	named := map[string]bool{}
-	for _, s := range services {
-		s = strings.ToLower(s)
+	for s := range services {
 		if words[strings.TrimSuffix(s, "s")] {
 			named[s] = true
 		}
